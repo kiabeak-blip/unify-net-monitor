@@ -1,8 +1,9 @@
-// lib/services/update_service.dart
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:path/path.dart' as p;
 
-const _currentVersion = '1.1.0';
+const _currentVersion = '1.1.1';
 const _githubRepo = 'kiabeak-blip/unify-net-monitor';
 const _releasesApiUrl =
     'https://api.github.com/repos/$_githubRepo/releases/latest';
@@ -51,6 +52,38 @@ class UpdateService {
     }
   }
 
+  /// Downloads the installer to the system temp folder, reporting progress
+  /// via [onProgress] (0.0–1.0). Returns the local path when done.
+  static Future<String> downloadUpdate(
+      String url, void Function(double) onProgress) async {
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 15);
+    final req = await client.getUrl(Uri.parse(url));
+    req.headers.set('User-Agent', 'UnifyNetMonitor/$_currentVersion');
+    final res = await req.close().timeout(const Duration(seconds: 15));
+
+    final total = res.contentLength; // -1 if unknown
+    final dest = p.join(Directory.systemTemp.path,
+        'UnifyNetMonitor_Update_${DateTime.now().millisecondsSinceEpoch}.exe');
+    final file = File(dest);
+    final sink = file.openWrite();
+
+    int received = 0;
+    await for (final chunk in res) {
+      sink.add(chunk);
+      received += chunk.length;
+      if (total > 0) onProgress(received / total);
+    }
+    await sink.flush();
+    await sink.close();
+    return dest;
+  }
+
+  /// Launches the installer (silent /SILENT flag lets Inno run without wizard).
+  static Future<void> runInstaller(String path) async {
+    await Process.start(path, ['/SILENT'], runInShell: false);
+  }
+
   static String? _assetUrl(Map<String, dynamic> json) {
     final assets = json['assets'] as List<dynamic>? ?? [];
     for (final a in assets) {
@@ -76,9 +109,5 @@ class UpdateService {
     final parts = v.split('.').map((s) => int.tryParse(s) ?? 0).toList();
     while (parts.length < 3) parts.add(0);
     return parts;
-  }
-
-  static Future<void> openDownloadPage(String url) async {
-    await Process.start('cmd', ['/c', 'start', '', url]);
   }
 }

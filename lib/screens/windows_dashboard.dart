@@ -182,31 +182,8 @@ class _SidebarState extends State<_Sidebar> {
   void _showUpdateDialog(BuildContext context, UpdateInfo info) {
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF0D1321),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12),
-            side: const BorderSide(color: Color(0xFF1E2D45))),
-        title: const Text('Update Available',
-            style: TextStyle(color: Colors.white, fontSize: 16)),
-        content: Text(
-          'Version ${info.latestVersion} is available.\n'
-          'You are running v${UpdateService.currentVersion}.',
-          style: const TextStyle(color: Colors.white70, fontSize: 13)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Later', style: TextStyle(color: Colors.white38))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF00D4FF),
-                foregroundColor: Colors.black),
-            onPressed: () {
-              Navigator.pop(context);
-              UpdateService.openDownloadPage(info.downloadUrl);
-            },
-            child: const Text('Download')),
-        ],
-      ),
+      barrierDismissible: false,
+      builder: (_) => _UpdateDialog(info: info),
     );
   }
 
@@ -964,6 +941,125 @@ class _SshLauncherState extends State<_SshLauncher> {
     );
   }
 }
+
+// ─── In-app Update Dialog ──────────────────────────────────────────────────
+
+class _UpdateDialog extends StatefulWidget {
+  const _UpdateDialog({required this.info});
+  final UpdateInfo info;
+  @override State<_UpdateDialog> createState() => _UpdateDialogState();
+}
+
+class _UpdateDialogState extends State<_UpdateDialog> {
+  _Phase _phase = _Phase.idle;
+  double _progress = 0;
+  String? _error;
+
+  Future<void> _download() async {
+    setState(() { _phase = _Phase.downloading; _progress = 0; _error = null; });
+    try {
+      final path = await UpdateService.downloadUpdate(
+        widget.info.downloadUrl,
+        (p) { if (mounted) setState(() => _progress = p); },
+      );
+      if (!mounted) return;
+      setState(() => _phase = _Phase.installing);
+      await UpdateService.runInstaller(path);
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      if (mounted) setState(() { _phase = _Phase.idle; _error = e.toString(); });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: const Color(0xFF0D1321),
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: const BorderSide(color: Color(0xFF1E2D45))),
+      child: SizedBox(
+        width: 360,
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Container(padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(color: const Color(0xFF00D4FF).withOpacity(.12), borderRadius: BorderRadius.circular(8)),
+                child: const Icon(Icons.system_update_alt, color: Color(0xFF00D4FF), size: 20)),
+              const SizedBox(width: 12),
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Update Available', style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w700)),
+                Text('v${UpdateService.currentVersion}  →  v${widget.info.latestVersion}',
+                    style: const TextStyle(color: Colors.white38, fontSize: 12)),
+              ]),
+            ]),
+            const SizedBox(height: 20),
+
+            if (_phase == _Phase.idle) ...[
+              const Text('A new version of Unify Net Monitor is ready to install.',
+                  style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.5)),
+              if (_error != null) ...[
+                const SizedBox(height: 10),
+                Container(padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(color: Colors.red.withOpacity(.1), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.red.withOpacity(.3))),
+                  child: Text(_error!, style: const TextStyle(color: Colors.redAccent, fontSize: 11))),
+              ],
+              const SizedBox(height: 20),
+              Row(children: [
+                TextButton(onPressed: () => Navigator.pop(context),
+                    child: const Text('Later', style: TextStyle(color: Colors.white38))),
+                const Spacer(),
+                ElevatedButton.icon(
+                  onPressed: _download,
+                  icon: const Icon(Icons.download, size: 16),
+                  label: const Text('Download & Install'),
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF00D4FF),
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                      textStyle: const TextStyle(fontWeight: FontWeight.w700)),
+                ),
+              ]),
+            ],
+
+            if (_phase == _Phase.downloading) ...[
+              Row(children: [
+                const Text('Downloading...', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                const Spacer(),
+                Text('${(_progress * 100).round()}%', style: const TextStyle(color: Color(0xFF00D4FF), fontFamily: 'monospace', fontSize: 13)),
+              ]),
+              const SizedBox(height: 10),
+              ClipRRect(borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: _progress > 0 ? _progress : null,
+                  minHeight: 8,
+                  color: const Color(0xFF00D4FF),
+                  backgroundColor: const Color(0xFF1E2D45))),
+              const SizedBox(height: 16),
+              Align(alignment: Alignment.centerRight,
+                child: TextButton(onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel', style: TextStyle(color: Colors.white38)))),
+            ],
+
+            if (_phase == _Phase.installing) ...[
+              const Row(children: [
+                SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00D4FF))),
+                SizedBox(width: 12),
+                Text('Launching installer...', style: TextStyle(color: Colors.white70, fontSize: 13)),
+              ]),
+              const SizedBox(height: 6),
+              const Text('The installer will open. You can close the app now.',
+                  style: TextStyle(color: Colors.white38, fontSize: 11)),
+            ],
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+enum _Phase { idle, downloading, installing }
 
 class _F extends StatelessWidget {
   const _F(this.label, this.ctrl, this.icon, this.hint,
