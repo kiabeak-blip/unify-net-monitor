@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:path/path.dart' as p;
 
-const _currentVersion = '1.1.7';
+const _currentVersion = '1.1.8';
 const _githubRepo = 'kiabeak-blip/unify-net-monitor';
 const _releasesApiUrl =
     'https://api.github.com/repos/$_githubRepo/releases/latest';
@@ -79,15 +79,27 @@ class UpdateService {
     return dest;
   }
 
-  /// Launches the installer elevated via PowerShell RunAs, then exits the app.
+  /// Launches the installer elevated via a VBS launcher script.
+  /// Using wscript.exe + ShellExecute "runas" is the most reliable UAC
+  /// elevation on Windows — wscript.exe is a system process that survives
+  /// after the app calls exit(0), unlike a PowerShell child process which
+  /// gets killed when its parent (this app) exits.
   static Future<void> runInstaller(String path) async {
-    // Use Start-Process -Verb RunAs so UAC triggers and the installer gets
-    // the admin rights it needs to replace files in Program Files.
+    // Escape backslashes for VBScript string literal
+    final escaped = path.replaceAll(r'\', r'\\');
+    final vbs = '''
+Set oShell = CreateObject("Shell.Application")
+oShell.ShellExecute "$escaped", "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART", "", "runas", 1
+''';
+    final vbsPath = p.join(Directory.systemTemp.path,
+        'unm_update_${DateTime.now().millisecondsSinceEpoch}.vbs');
+    await File(vbsPath).writeAsString(vbs);
+
     await Process.start(
-      'powershell',
-      ['-NoProfile', '-Command',
-        'Start-Process -FilePath "$path" -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Verb RunAs'],
+      'wscript.exe',
+      ['//nologo', vbsPath],
       runInShell: false,
+      mode: ProcessStartMode.detached, // survives parent exit
     );
   }
 
