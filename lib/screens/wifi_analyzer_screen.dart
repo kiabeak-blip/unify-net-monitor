@@ -148,14 +148,10 @@ class _WifiAnalyzerScreenState extends State<WifiAnalyzerScreen> {
   }
 
   String _detectBand(int channel, String radioType) {
-    if (radioType.contains('802.11ax') || radioType.contains('6 GHz')) {
-      return '6 GHz';
-    }
+    if (radioType.contains('6 GHz')) return '6 GHz';
+    if (radioType.contains('802.11ax') || radioType.contains('802.11ac')) return '5 GHz';
     if (channel > 14) return '5 GHz';
     if (channel >= 1 && channel <= 14) return '2.4 GHz';
-    if (radioType.contains('802.11ac') || radioType.contains('802.11n')) {
-      return '5 GHz';
-    }
     return 'Unknown';
   }
 

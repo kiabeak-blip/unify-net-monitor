@@ -62,7 +62,9 @@ class _State extends State<BannerGrabberScreen> {
       if (!comp.isCompleted) comp.complete();
     }, onDone: () { if (!comp.isCompleted) comp.complete(); });
     // For HTTP, send a request
-    if (port == 80 || port == 8080 || port == 443) {
+    // Port 443 uses TLS — sending plaintext HTTP would corrupt the handshake.
+    // Only send HTTP request on plain HTTP ports.
+    if (port == 80 || port == 8080) {
       socket.write('HEAD / HTTP/1.0\r\nHost: $host\r\n\r\n');
     }
     await comp.future.timeout(const Duration(seconds: 4), onTimeout: () {});

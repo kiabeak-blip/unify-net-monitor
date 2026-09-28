@@ -52,7 +52,7 @@ class _State extends State<HttpHeaderScreen> {
         _statusMsg = _httpStatus(res.statusCode);
         _checks.addAll(checks); _loading = false;
       });
-      res.drain();
+      await res.drain<void>();
     } catch (e) {
       setState(() { _error = e.toString(); _loading = false; });
     }

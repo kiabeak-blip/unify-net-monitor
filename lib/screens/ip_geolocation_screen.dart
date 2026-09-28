@@ -54,7 +54,7 @@ class _State extends State<IpGeolocationScreen> {
               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00D4FF), foregroundColor: Colors.black, padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 18)),
               child: _loading ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black)) : const Text('Lookup')),
             const SizedBox(width: 8),
-            OutlinedButton(onPressed: () { _ctrl.clear(); _lookup(''); },
+            OutlinedButton(onPressed: _loading ? null : () { _ctrl.clear(); _lookup(''); },
               style: OutlinedButton.styleFrom(foregroundColor: Colors.white54, side: const BorderSide(color: Color(0xFF2A3F5F)), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18)),
               child: const Text('My IP')),
           ]),

@@ -10,7 +10,6 @@ class HashGeneratorScreen extends StatefulWidget {
 
 class _State extends State<HashGeneratorScreen> {
   final _ctrl = TextEditingController();
-  final _fileCtrl = TextEditingController();
   bool _isHex = false;
   Map<String, String> _hashes = {};
 

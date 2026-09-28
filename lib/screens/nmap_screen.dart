@@ -777,6 +777,7 @@ class _QuickChip extends StatelessWidget {
         final state = context.findAncestorStateOfType<_NmapScreenState>();
         if (state != null) {
           state._targetCtrl.text = label;
+          state._start();
         }
       },
     );

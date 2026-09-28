@@ -81,7 +81,16 @@ try {
   }
 
   DateTime? _parseDate(String s) {
+    // ISO 8601 format
     try { return DateTime.parse(s); } catch (_) {}
+    // PowerShell Windows locale: M/d/yyyy h:mm:ss AM/PM  e.g. "1/15/2025 3:00:00 PM"
+    final m = RegExp(r'^(\d{1,2})/(\d{1,2})/(\d{4})').firstMatch(s);
+    if (m != null) {
+      try {
+        return DateTime(int.parse(m.group(3)!), int.parse(m.group(1)!), int.parse(m.group(2)!));
+      } catch (_) {}
+    }
+    // DD-MM-YYYY fallback
     try { return DateTime.tryParse(s.replaceAll('/', '-')); } catch (_) {}
     return null;
   }
