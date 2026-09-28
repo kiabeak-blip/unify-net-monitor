@@ -1,0 +1,41 @@
+name: network_monitor
+description: Unify Net Monitor - Professional Network Monitoring & Remote Access Tool
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  dart_ping: ^9.0.1
+  network_info_plus: ^5.0.0
+  flutter_local_notifications: ^17.0.0
+  shared_preferences: ^2.2.2
+  provider: ^6.1.1
+  dart_ping_ios: 4.0.2
+  dartssh2: ^2.9.0
+  crypto: ^3.0.3
+  fl_chart: ^0.68.0
+  animated_text_kit: ^4.2.2
+  lottie: ^3.1.0
+  cupertino_icons: ^1.0.6
+  speech_to_text: ^7.3.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.14.0
+
+flutter_launcher_icons:
+  windows:
+    generate: true
+    image_path: "assets/app_icon.png"
+    icon_size: 48
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/
+    - assets/app_icon.png
