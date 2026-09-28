@@ -29,6 +29,7 @@ class _State extends State<NetBiosScannerScreen> {
   void _cancel() => setState(() => _cancelled = true);
 
   Future<void> _scan() async {
+    if (_loading) return; // prevent concurrent scans
     final target = _targetCtrl.text.trim();
     if (target.isEmpty) return;
     setState(() { _loading = true; _cancelled = false; _scanned = false; _error = null; _results = []; _progress = 0; _total = 0; _liveHosts = 0; });
@@ -45,18 +46,20 @@ class _State extends State<NetBiosScannerScreen> {
   }
 
   Future<void> _scanHost(String target) async {
+    // _liveHosts stays 0 for single-host mode — used to pick correct empty message
     final result = await _queryNbtstat(target);
-    if (mounted && result != null) setState(() => _results = [result]);
+    if (mounted) setState(() => _results = result != null ? [result] : []);
   }
 
   Future<void> _scanSubnet(String subnet) async {
     var base = subnet.replaceAll(RegExp(r'/\d+$'), '').trim();
     final parts = base.split('.');
 
-    // If a full IP was entered (4 octets), just scan that one host directly
+    // If a full IP was entered (4 octets), scan that one host directly
+    // Temporarily unset _scanRange context so empty-state message is correct
     if (parts.length == 4 && int.tryParse(parts[3]) != null) {
       final result = await _queryNbtstat(base);
-      if (mounted) setState(() => _results = result != null ? [result] : []);
+      if (mounted) setState(() { _results = result != null ? [result] : []; _scanRange = false; });
       return;
     }
 
@@ -232,14 +235,16 @@ class _State extends State<NetBiosScannerScreen> {
               const SizedBox(height: 12),
               Text(
                 _scanned
-                  ? (_liveHosts == 0
-                      ? 'No hosts responded to ping on this subnet'
-                      : 'Found $_liveHosts live host${_liveHosts == 1 ? "" : "s"} but none had NetBIOS names')
+                  ? (_scanRange
+                      ? (_liveHosts == 0
+                          ? 'No hosts responded to ping on this subnet'
+                          : 'Found $_liveHosts live host${_liveHosts == 1 ? "" : "s"} but none had NetBIOS names')
+                      : 'No NetBIOS names found on this host')
                   : 'Enter a host or subnet to scan',
                 style: const TextStyle(color: Colors.white24, fontSize: 13)),
-              if (_scanned && _liveHosts > 0) ...[
+              if (_scanned) ...[
                 const SizedBox(height: 8),
-                const Text('NetBIOS may be disabled on those devices (common on Windows 10/11)',
+                const Text('NetBIOS may be disabled (common on Windows 10/11)',
                   style: TextStyle(color: Colors.white12, fontSize: 11)),
               ],
             ])))

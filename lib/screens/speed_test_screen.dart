@@ -928,7 +928,39 @@ class _ActionButton extends StatelessWidget {
 
 // ── Ookla install warning ─────────────────────────────────────────────────────
 
-class _OoklaWarning extends StatelessWidget {
+class _OoklaWarning extends StatefulWidget {
+  final VoidCallback? onInstalled;
+  const _OoklaWarning({this.onInstalled});
+  @override State<_OoklaWarning> createState() => _OoklaWarningState();
+}
+
+class _OoklaWarningState extends State<_OoklaWarning> {
+  bool _installing = false;
+  String? _status;
+
+  Future<void> _install() async {
+    setState(() { _installing = true; _status = 'Installing via winget...'; });
+    try {
+      final res = await Process.run(
+        'winget', ['install', '--id', 'Ookla.Speedtest.CLI', '--silent',
+          '--accept-package-agreements', '--accept-source-agreements'],
+        runInShell: true,
+        stdoutEncoding: const SystemEncoding(),
+        stderrEncoding: const SystemEncoding(),
+      ).timeout(const Duration(minutes: 3));
+      if (mounted) {
+        if (res.exitCode == 0 || res.exitCode == -1978335189) {
+          setState(() { _installing = false; _status = 'Installed! Restart the test.'; });
+          widget.onInstalled?.call();
+        } else {
+          setState(() { _installing = false; _status = 'Failed. Run manually: winget install Ookla.Speedtest.CLI'; });
+        }
+      }
+    } catch (e) {
+      if (mounted) setState(() { _installing = false; _status = 'Error: $e'; });
+    }
+  }
+
   @override
   Widget build(BuildContext context) => Container(
     margin: const EdgeInsets.only(bottom: 16),
@@ -939,42 +971,53 @@ class _OoklaWarning extends StatelessWidget {
       border: Border.all(color: const Color(0xFFFFAA00).withOpacity(0.25)),
     ),
     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const Row(children: [
-        Icon(Icons.warning_amber_rounded, color: Color(0xFFFFAA00), size: 16),
-        SizedBox(width: 8),
-        Text('Ookla Speedtest CLI not installed',
-            style: TextStyle(color: Color(0xFFFFAA00),
-                fontSize: 12, fontWeight: FontWeight.w700)),
-      ]),
-      const SizedBox(height: 8),
-      const Text('Switch to Cloudflare or LibreSpeed tab (no install needed), or:',
-          style: TextStyle(color: Colors.white38, fontSize: 11)),
-      const SizedBox(height: 6),
-      GestureDetector(
-        onTap: () {
-          Clipboard.setData(const ClipboardData(
-              text: 'winget install Ookla.Speedtest.CLI'));
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-              content: Text('Copied'),
-              duration: Duration(seconds: 1),
-              behavior: SnackBarBehavior.floating));
-        },
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-          decoration: BoxDecoration(
-            color: const Color(0xFF0A0E1A),
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(
-                color: const Color(0xFF00D4FF).withOpacity(0.2)),
+      Row(children: [
+        const Icon(Icons.warning_amber_rounded, color: Color(0xFFFFAA00), size: 16),
+        const SizedBox(width: 8),
+        const Expanded(child: Text('Ookla Speedtest CLI not installed',
+            style: TextStyle(color: Color(0xFFFFAA00), fontSize: 12, fontWeight: FontWeight.w700))),
+        if (!_installing)
+          ElevatedButton.icon(
+            onPressed: _install,
+            icon: const Icon(Icons.download, size: 13),
+            label: const Text('Install', style: TextStyle(fontSize: 12)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00D4FF), foregroundColor: Colors.black,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            ),
           ),
-          child: Row(children: [
-            const Expanded(child: Text('winget install Ookla.Speedtest.CLI',
-                style: TextStyle(color: Color(0xFF00D4FF),
-                    fontSize: 11, fontFamily: 'monospace'))),
-            const Icon(Icons.copy, color: Colors.white24, size: 13),
-          ]),
+      ]),
+      const SizedBox(height: 6),
+      if (_installing) ...[
+        const LinearProgressIndicator(color: Color(0xFF00D4FF), backgroundColor: Color(0xFF1E2D45)),
+        const SizedBox(height: 6),
+        Text(_status ?? '', style: const TextStyle(color: Colors.white54, fontSize: 11)),
+      ] else if (_status != null)
+        Text(_status!, style: const TextStyle(color: Colors.white54, fontSize: 11))
+      else ...[
+        const Text('Or switch to Cloudflare / LibreSpeed tab (no install needed).',
+            style: TextStyle(color: Colors.white38, fontSize: 11)),
+        const SizedBox(height: 6),
+        GestureDetector(
+          onTap: () {
+            Clipboard.setData(const ClipboardData(text: 'winget install Ookla.Speedtest.CLI'));
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text('Copied'), duration: Duration(seconds: 1),
+                behavior: SnackBarBehavior.floating));
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            decoration: BoxDecoration(color: const Color(0xFF0A0E1A),
+              borderRadius: BorderRadius.circular(7),
+              border: Border.all(color: const Color(0xFF00D4FF).withOpacity(0.2))),
+            child: const Row(children: [
+              Expanded(child: Text('winget install Ookla.Speedtest.CLI',
+                  style: TextStyle(color: Color(0xFF00D4FF), fontSize: 11, fontFamily: 'monospace'))),
+              Icon(Icons.copy, color: Colors.white24, size: 13),
+            ]),
+          ),
         ),
-      ),
+      ],
     ]),
   );
 }
