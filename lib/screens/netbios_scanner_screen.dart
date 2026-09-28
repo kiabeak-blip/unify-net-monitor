@@ -51,20 +51,30 @@ class _State extends State<NetBiosScannerScreen> {
 
   Future<void> _scanSubnet(String subnet) async {
     var base = subnet.replaceAll(RegExp(r'/\d+$'), '').trim();
+    final parts = base.split('.');
+
+    // If a full IP was entered (4 octets), just scan that one host directly
+    if (parts.length == 4 && int.tryParse(parts[3]) != null) {
+      final result = await _queryNbtstat(base);
+      if (mounted) setState(() => _results = result != null ? [result] : []);
+      return;
+    }
+
+    // Strip trailing .0 for subnet prefix
     final lastDot = base.lastIndexOf('.');
     if (lastDot > 0 && base.substring(lastDot + 1) == '0') base = base.substring(0, lastDot);
-    final parts = base.split('.');
-    if (parts.length < 3) {
+    final subParts = base.split('.');
+    if (subParts.length < 3) {
       setState(() => _error = 'Enter a subnet like 192.168.1 or 192.168.1.0/24');
       return;
     }
-    final prefix = parts.take(3).join('.');
+    final prefix = subParts.take(3).join('.');
     final ips = List.generate(254, (i) => '$prefix.${i + 1}');
     setState(() { _total = ips.length; _progress = 0; });
 
-    // First: fast ping sweep in parallel to find live hosts
+    // First: ping sweep — smaller batches to avoid Windows ICMP rate limiting
     final liveHosts = <String>[];
-    const pingBatch = 50;
+    const pingBatch = 15;
     for (var i = 0; i < ips.length && !_cancelled; i += pingBatch) {
       final batch = ips.sublist(i, (i + pingBatch).clamp(0, ips.length));
       final hits = await Future.wait(batch.map(_pingHost));
@@ -95,8 +105,8 @@ class _State extends State<NetBiosScannerScreen> {
 
   Future<bool> _pingHost(String ip) async {
     try {
-      final res = await Process.run('ping', ['-n', '1', '-w', '300', ip], runInShell: false)
-          .timeout(const Duration(milliseconds: 600));
+      final res = await Process.run('ping', ['-n', '1', '-w', '800', ip], runInShell: false)
+          .timeout(const Duration(milliseconds: 1200));
       return res.exitCode == 0;
     } catch (_) { return false; }
   }
