@@ -956,9 +956,11 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   double _progress = 0;
   String? _error;
   bool _cancelRequested = false;
+  bool _uacTimeout = false;
 
   Future<void> _download() async {
     _cancelRequested = false;
+    _uacTimeout = false;
     setState(() { _phase = _Phase.downloading; _progress = 0; _error = null; });
     String? path;
     try {
@@ -967,14 +969,21 @@ class _UpdateDialogState extends State<_UpdateDialog> {
         (p) { if (mounted) setState(() => _progress = p); },
       );
       if (!mounted || _cancelRequested) {
-        // Clean up downloaded file if cancel was requested mid-download
         if (path != null) File(path).deleteSync(recursive: false);
         return;
       }
-      setState(() => _phase = _Phase.installing);
+      setState(() { _phase = _Phase.installing; _uacTimeout = false; });
+
+      // Minimize all windows so the UAC prompt is visible on top
+      Process.run('powershell', ['-NoProfile', '-Command',
+        '(New-Object -ComObject Shell.Application).MinimizeAll()'], runInShell: false);
+
       await UpdateService.runInstaller(path);
-      // Inno Setup's InitializeSetup() runs taskkill to close this app.
-      // Just show "installing" and wait — the installer will kill us.
+
+      // If installer doesn't kill us within 20s, UAC was probably hidden —
+      // show a hint so the user knows to check the taskbar
+      await Future.delayed(const Duration(seconds: 20));
+      if (mounted) setState(() => _uacTimeout = true);
     } catch (e) {
       if (mounted) setState(() { _phase = _Phase.idle; _error = e.toString(); });
     }
@@ -1057,14 +1066,30 @@ class _UpdateDialogState extends State<_UpdateDialog> {
             ],
 
             if (_phase == _Phase.installing) ...[
-              const Row(children: [
-                SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00D4FF))),
-                SizedBox(width: 12),
-                Text('Launching installer...', style: TextStyle(color: Colors.white70, fontSize: 13)),
+              Row(children: [
+                const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00D4FF))),
+                const SizedBox(width: 12),
+                Text(_uacTimeout ? 'Waiting for UAC approval...' : 'Launching installer...',
+                    style: const TextStyle(color: Colors.white70, fontSize: 13)),
               ]),
               const SizedBox(height: 6),
-              const Text('The installer will open. You can close the app now.',
-                  style: TextStyle(color: Colors.white38, fontSize: 11)),
+              if (!_uacTimeout)
+                const Text('Minimizing windows so the installer is visible...',
+                    style: TextStyle(color: Colors.white38, fontSize: 11))
+              else ...[
+                const Text('A permission prompt (UAC) is waiting for your approval.',
+                    style: TextStyle(color: Color(0xFFFFCC00), fontSize: 12)),
+                const SizedBox(height: 4),
+                const Text('Check the taskbar for a flashing shield icon and click Yes.',
+                    style: TextStyle(color: Colors.white38, fontSize: 11)),
+                const SizedBox(height: 10),
+                SizedBox(width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: () => exit(0),
+                    style: OutlinedButton.styleFrom(side: const BorderSide(color: Color(0xFF00D4FF))),
+                    child: const Text('Close app & approve UAC prompt', style: TextStyle(color: Color(0xFF00D4FF))),
+                  )),
+              ],
             ],
           ]),
         ),
