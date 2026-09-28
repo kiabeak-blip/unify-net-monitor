@@ -133,6 +133,22 @@ class DeviceManager extends ChangeNotifier {
     await _saveDevices();
     await NotificationService.notifyScanComplete(
         _devices.length, onlineCount);
+
+    // Port scan pass — run after device list is visible, in batches of 8
+    final onlineIps = discovered.toList();
+    const portBatch = 8;
+    for (var i = 0; i < onlineIps.length; i += portBatch) {
+      final batch = onlineIps.sublist(i, (i + portBatch).clamp(0, onlineIps.length));
+      await Future.wait(batch.map((ip) async {
+        final ports = await NetworkScanner.scanPorts(ip);
+        final idx = _devices.indexWhere((d) => d.ip == ip);
+        if (idx >= 0) {
+          _devices[idx] = _devices[idx].copyWith(ports: ports);
+          notifyListeners();
+        }
+      }));
+    }
+    await _saveDevices();
   }
 
   void _upsertDevice(Device newDevice) {
