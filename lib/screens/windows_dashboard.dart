@@ -966,9 +966,8 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       if (!mounted) return;
       setState(() => _phase = _Phase.installing);
       await UpdateService.runInstaller(path);
-      // Close the app so the installer can replace the running exe
-      await Future.delayed(const Duration(milliseconds: 800));
-      exit(0);
+      // Inno Setup's InitializeSetup() runs taskkill to close this app.
+      // Just show "installing" and wait — the installer will kill us.
     } catch (e) {
       if (mounted) setState(() { _phase = _Phase.idle; _error = e.toString(); });
     }

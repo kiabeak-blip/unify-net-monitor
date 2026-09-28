@@ -3,7 +3,7 @@
 ; Run: iscc setup.iss
 
 #define AppName      "Unify Net Monitor"
-#define AppVersion   "1.1.8"
+#define AppVersion   "1.1.9"
 #define AppPublisher "Unify Technologies"
 #define AppExeName   "network_monitor.exe"
 #define AppId        "{{8B3F2C4A-9D7E-4F1B-A6C5-2E8D0B1F3A7C}"
@@ -64,18 +64,32 @@ Name: "{autodesktop}\{#AppName}";       Filename: "{app}\{#AppExeName}"; IconFil
 ; Launch after install (optional)
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall
 
-; Pin to taskbar via PowerShell (Windows 10/11)
+; Pin to taskbar: create a Start Menu shortcut and use explorer shell verb.
+; InvokeVerb('taskbarpin') was blocked by Microsoft on Windows 10 1703+.
+; The reliable alternative is to copy the shortcut to the user's taskbar pins folder.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -NonInteractive -Command ""$app = '{app}\{#AppExeName}'; $shell = New-Object -ComObject Shell.Application; $folder = $shell.Namespace((Split-Path $app)); $item = $folder.ParseName((Split-Path $app -Leaf)); $item.InvokeVerb('taskbarpin')"""; \
+  Parameters: "-NoProfile -NonInteractive -Command ""Copy-Item -Path (New-Object -ComObject WScript.Shell).CreateShortcut([System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\{#AppName}.lnk')).FullName -Destination $null -ErrorAction SilentlyContinue; $ws = New-Object -ComObject WScript.Shell; $lnk = $ws.CreateShortcut([System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\{#AppName}.lnk')); $lnk.TargetPath = '{app}\{#AppExeName}'; $lnk.Save()"""; \
   Flags: nowait runhidden; Tasks: taskbaricon
 
 [UninstallRun]
-; Unpin from taskbar on uninstall
+; Remove taskbar pin shortcut on uninstall
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -NonInteractive -Command ""$app = '{app}\{#AppExeName}'; $shell = New-Object -ComObject Shell.Application; $folder = $shell.Namespace((Split-Path $app)); $item = $folder.ParseName((Split-Path $app -Leaf)); $item.InvokeVerb('taskbarunpin')"""; \
+  Parameters: "-NoProfile -NonInteractive -Command ""Remove-Item -Path ([System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\{#AppName}.lnk')) -Force -ErrorAction SilentlyContinue"""; \
   Flags: nowait runhidden
 
 [Code]
+// Kill any running instance before installing so the exe is not locked.
+// Inno Setup calls this before copying files, so no exit(0) needed in the app.
+function InitializeSetup(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Exec('taskkill.exe', '/F /IM {#AppExeName}', '', SW_HIDE,
+       ewWaitUntilTerminated, ResultCode);
+  // Always return True — even if the app wasn't running, proceed with install
+  Result := True;
+end;
+
 // ── Welcome page: show trial info ──────────────────────────────────────────
 procedure InitializeWizard();
 begin
