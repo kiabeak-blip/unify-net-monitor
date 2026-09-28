@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:path/path.dart' as p;
 
-const _currentVersion = '1.2.2';
+const _currentVersion = '1.2.3';
 const _githubRepo = 'kiabeak-blip/unify-net-monitor';
 const _releasesApiUrl =
     'https://api.github.com/repos/$_githubRepo/releases/latest';
@@ -79,14 +79,17 @@ class UpdateService {
     return dest;
   }
 
-  /// Launches the installer elevated via PowerShell RunAs.
-  /// The Inno Setup installer itself kills the running app via taskkill
-  /// in InitializeSetup(), so we do NOT need to call exit(0) first.
+  /// Launches the installer via cmd /c start, which calls Win32 ShellExecute.
+  /// ShellExecute respects the exe's admin manifest and triggers UAC correctly.
+  /// The /VERYSILENT flag is passed so Inno Setup installs without showing a GUI.
+  /// Inno Setup's InitializeSetup() runs taskkill to close this app — no exit(0) needed.
   static Future<void> runInstaller(String path) async {
+    // Wrap path in quotes in case it contains spaces (temp folder user name may have spaces).
+    // cmd /c start "" launches via ShellExecute — the correct UAC trigger for manifested exes.
     await Process.start(
-      'powershell',
-      ['-NoProfile', '-WindowStyle', 'Hidden', '-Command',
-        'Start-Process -FilePath "$path" -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Verb RunAs'],
+      'cmd',
+      ['/c', 'start', '', '"$path"',
+        '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'],
       runInShell: false,
       mode: ProcessStartMode.detached,
     );
