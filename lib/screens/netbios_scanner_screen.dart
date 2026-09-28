@@ -45,9 +45,6 @@ class _State extends State<NetBiosScannerScreen> {
   }
 
   Future<void> _scanHost(String target) async {
-    // Flush cache so repeated scans return fresh results
-    await Process.run('nbtstat', ['-R'], runInShell: false)
-        .timeout(const Duration(seconds: 3), onTimeout: () => ProcessResult(0, 0, '', ''));
     final result = await _queryNbtstat(target);
     if (mounted && result != null) setState(() => _results = [result]);
   }
@@ -75,10 +72,6 @@ class _State extends State<NetBiosScannerScreen> {
     final ips = List.generate(254, (i) => '$prefix.${i + 1}');
     setState(() { _total = ips.length; _progress = 0; });
 
-    // Flush nbtstat name cache so repeated scans get fresh results
-    await Process.run('nbtstat', ['-R'], runInShell: false)
-        .timeout(const Duration(seconds: 3), onTimeout: () => ProcessResult(0, 0, '', ''));
-
     // First: ping sweep — smaller batches to avoid Windows ICMP rate limiting
     final liveHosts = <String>[];
     const pingBatch = 15;
@@ -100,7 +93,7 @@ class _State extends State<NetBiosScannerScreen> {
     if (liveHosts.isEmpty) return;
 
     // Second: run nbtstat only on live hosts, in parallel batches of 20
-    setState(() { _total = liveHosts.length; _progress = 0; });
+    if (mounted) setState(() { _total = liveHosts.length; _progress = 0; });
     const nbtBatch = 20;
     for (var i = 0; i < liveHosts.length && !_cancelled; i += nbtBatch) {
       final batch = liveHosts.sublist(i, (i + nbtBatch).clamp(0, liveHosts.length));

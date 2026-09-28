@@ -955,15 +955,22 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   _Phase _phase = _Phase.idle;
   double _progress = 0;
   String? _error;
+  bool _cancelRequested = false;
 
   Future<void> _download() async {
+    _cancelRequested = false;
     setState(() { _phase = _Phase.downloading; _progress = 0; _error = null; });
+    String? path;
     try {
-      final path = await UpdateService.downloadUpdate(
+      path = await UpdateService.downloadUpdate(
         widget.info.downloadUrl,
         (p) { if (mounted) setState(() => _progress = p); },
       );
-      if (!mounted) return;
+      if (!mounted || _cancelRequested) {
+        // Clean up downloaded file if cancel was requested mid-download
+        if (path != null) File(path).deleteSync(recursive: false);
+        return;
+      }
       setState(() => _phase = _Phase.installing);
       await UpdateService.runInstaller(path);
       // Inno Setup's InitializeSetup() runs taskkill to close this app.
@@ -971,6 +978,11 @@ class _UpdateDialogState extends State<_UpdateDialog> {
     } catch (e) {
       if (mounted) setState(() { _phase = _Phase.idle; _error = e.toString(); });
     }
+  }
+
+  void _cancel() {
+    _cancelRequested = true;
+    if (mounted) Navigator.pop(context);
   }
 
   @override
@@ -1040,7 +1052,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                   backgroundColor: const Color(0xFF1E2D45))),
               const SizedBox(height: 16),
               Align(alignment: Alignment.centerRight,
-                child: TextButton(onPressed: () => Navigator.pop(context),
+                child: TextButton(onPressed: _cancel,
                     child: const Text('Cancel', style: TextStyle(color: Colors.white38)))),
             ],
 

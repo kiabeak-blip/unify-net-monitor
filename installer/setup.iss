@@ -3,7 +3,7 @@
 ; Run: iscc setup.iss
 
 #define AppName      "Unify Net Monitor"
-#define AppVersion   "1.1.9"
+#define AppVersion   "1.2.0"
 #define AppPublisher "Unify Technologies"
 #define AppExeName   "network_monitor.exe"
 #define AppId        "{{8B3F2C4A-9D7E-4F1B-A6C5-2E8D0B1F3A7C}"
@@ -45,7 +45,6 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon";     Description: "{cm:CreateDesktopIcon}";      GroupDescription: "Shortcuts:"; Flags: checkedonce
-Name: "taskbaricon";     Description: "Pin to &taskbar";              GroupDescription: "Shortcuts:"; Flags: unchecked
 Name: "quicklaunchicon"; Description: "Add to Start &Menu";           GroupDescription: "Shortcuts:"; Flags: checkedonce
 
 [Files]
@@ -64,18 +63,8 @@ Name: "{autodesktop}\{#AppName}";       Filename: "{app}\{#AppExeName}"; IconFil
 ; Launch after install (optional)
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall
 
-; Pin to taskbar: create a Start Menu shortcut and use explorer shell verb.
-; InvokeVerb('taskbarpin') was blocked by Microsoft on Windows 10 1703+.
-; The reliable alternative is to copy the shortcut to the user's taskbar pins folder.
-Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -NonInteractive -Command ""Copy-Item -Path (New-Object -ComObject WScript.Shell).CreateShortcut([System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\{#AppName}.lnk')).FullName -Destination $null -ErrorAction SilentlyContinue; $ws = New-Object -ComObject WScript.Shell; $lnk = $ws.CreateShortcut([System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\{#AppName}.lnk')); $lnk.TargetPath = '{app}\{#AppExeName}'; $lnk.Save()"""; \
-  Flags: nowait runhidden; Tasks: taskbaricon
 
 [UninstallRun]
-; Remove taskbar pin shortcut on uninstall
-Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -NonInteractive -Command ""Remove-Item -Path ([System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\{#AppName}.lnk')) -Force -ErrorAction SilentlyContinue"""; \
-  Flags: nowait runhidden
 
 [Code]
 // Kill any running instance before installing so the exe is not locked.
@@ -98,5 +87,6 @@ begin
     'TRIAL LICENSE:' + #13#10 +
     'The software includes a 60-day free trial. After the trial period, ' +
     'you will need a license key from the owner to continue using the software.' + #13#10 + #13#10 +
+    'TIP: To pin to taskbar, right-click the app after launch and choose "Pin to taskbar".' + #13#10 + #13#10 +
     'Click Next to continue.';
 end;
