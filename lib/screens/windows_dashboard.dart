@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/device.dart';
 import '../services/device_manager.dart';
+import '../services/update_service.dart';
 import 'ping_screen.dart';
 import 'traceroute_screen.dart';
 import 'dns_lookup_screen.dart';
@@ -95,7 +96,7 @@ class _WindowsDashboardState extends State<WindowsDashboard> {
 
 // ─── Sidebar ───────────────────────────────────────────────────────────────
 
-class _Sidebar extends StatelessWidget {
+class _Sidebar extends StatefulWidget {
   const _Sidebar({required this.selected, required this.dm,
     required this.now, required this.onSelect});
 
@@ -105,9 +106,63 @@ class _Sidebar extends StatelessWidget {
   final ValueChanged<_NavItem> onSelect;
 
   @override
+  State<_Sidebar> createState() => _SidebarState();
+}
+
+class _SidebarState extends State<_Sidebar> {
+  UpdateInfo? _updateInfo;
+  bool _checking = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkUpdate();
+  }
+
+  Future<void> _checkUpdate() async {
+    if (_checking) return;
+    setState(() => _checking = true);
+    final info = await UpdateService.checkForUpdate();
+    if (mounted) setState(() { _updateInfo = info; _checking = false; });
+  }
+
+  void _showUpdateDialog(BuildContext context, UpdateInfo info) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF0D1321),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12),
+            side: const BorderSide(color: Color(0xFF1E2D45))),
+        title: const Text('Update Available',
+            style: TextStyle(color: Colors.white, fontSize: 16)),
+        content: Text(
+          'Version ${info.latestVersion} is available.\n'
+          'You are running v${UpdateService.currentVersion}.',
+          style: const TextStyle(color: Colors.white70, fontSize: 13)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Later', style: TextStyle(color: Colors.white38))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00D4FF),
+                foregroundColor: Colors.black),
+            onPressed: () {
+              Navigator.pop(context);
+              UpdateService.openDownloadPage(info.downloadUrl);
+            },
+            child: const Text('Download')),
+        ],
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final now = widget.now;
     final timeStr =
         '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+    final hasUpdate = _updateInfo?.hasUpdate == true;
 
     return SizedBox(
       width: 210,
@@ -115,7 +170,7 @@ class _Sidebar extends StatelessWidget {
         color: const Color(0xFF0D1321),
         child: Column(children: [
           // ── Fixed header ──
-          _SidebarHeader(dm: dm),
+          _SidebarHeader(dm: widget.dm),
           const Divider(height: 1, color: Color(0xFF1E2D45)),
           // ── Scrollable nav ──
           Expanded(
@@ -126,23 +181,44 @@ class _Sidebar extends StatelessWidget {
                 for (final item in [_NavItem.monitor, _NavItem.ping,
                   _NavItem.traceroute, _NavItem.dns, _NavItem.arp,
                   _NavItem.nmap, _NavItem.speedTest, _NavItem.myDevice])
-                  _NavTile(item: item, selected: selected == item,
-                      badge: item == _NavItem.monitor && dm.offlineCount > 0
-                          ? '${dm.offlineCount}' : null,
-                      onTap: () => onSelect(item)),
+                  _NavTile(item: item, selected: widget.selected == item,
+                      badge: item == _NavItem.monitor && widget.dm.offlineCount > 0
+                          ? '${widget.dm.offlineCount}' : null,
+                      onTap: () => widget.onSelect(item)),
                 const SizedBox(height: 6),
                 const Divider(height: 1, color: Color(0xFF1E2D45)),
                 const SizedBox(height: 6),
                 _SectionLabel('REMOTE ACCESS'),
                 for (final item in [_NavItem.ssh, _NavItem.rdp, _NavItem.vnc,
                   _NavItem.putty, _NavItem.ftp])
-                  _NavTile(item: item, selected: selected == item,
-                      onTap: () => onSelect(item)),
+                  _NavTile(item: item, selected: widget.selected == item,
+                      onTap: () => widget.onSelect(item)),
               ],
             ),
           ),
           // ── Fixed footer ──
           const Divider(height: 1, color: Color(0xFF1E2D45)),
+          // Update button (shown when update available)
+          if (hasUpdate)
+            InkWell(
+              onTap: () => _showUpdateDialog(context, _updateInfo!),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                color: const Color(0xFF00D4FF).withOpacity(0.12),
+                child: Row(children: [
+                  const Icon(Icons.system_update_alt,
+                      color: Color(0xFF00D4FF), size: 13),
+                  const SizedBox(width: 6),
+                  Expanded(child: Text(
+                      'Update v${_updateInfo!.latestVersion} available',
+                      style: const TextStyle(
+                          color: Color(0xFF00D4FF), fontSize: 10,
+                          fontWeight: FontWeight.w600),
+                      overflow: TextOverflow.ellipsis)),
+                ]),
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: Row(children: [
@@ -150,8 +226,26 @@ class _Sidebar extends StatelessWidget {
                   decoration: const BoxDecoration(
                       color: Color(0xFF00FF88), shape: BoxShape.circle)),
               const SizedBox(width: 6),
-              const Expanded(child: Text('Running',
-                  style: TextStyle(color: Colors.white38, fontSize: 10))),
+              Expanded(child: Text('v${UpdateService.currentVersion}',
+                  style: const TextStyle(color: Colors.white38, fontSize: 10))),
+              // Check for updates icon button
+              if (_checking)
+                const SizedBox(width: 12, height: 12,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 1.5, color: Colors.white24))
+              else
+                GestureDetector(
+                  onTap: _checkUpdate,
+                  child: Tooltip(
+                    message: 'Check for updates',
+                    child: Icon(
+                      hasUpdate ? Icons.upgrade : Icons.refresh,
+                      color: hasUpdate
+                          ? const Color(0xFF00D4FF) : Colors.white24,
+                      size: 14),
+                  ),
+                ),
+              const SizedBox(width: 6),
               Text(timeStr, style: const TextStyle(color: Colors.white24,
                   fontSize: 10, fontFamily: 'monospace')),
             ]),
