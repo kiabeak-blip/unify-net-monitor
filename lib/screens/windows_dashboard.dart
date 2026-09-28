@@ -18,6 +18,23 @@ import 'ftp_sftp_screen.dart';
 import 'speed_test_screen.dart';
 import 'my_device_screen.dart';
 import 'license_screen.dart';
+import 'wifi_analyzer_screen.dart';
+import 'subnet_calculator_screen.dart';
+import 'hash_generator_screen.dart';
+import 'password_generator_screen.dart';
+import 'ip_geolocation_screen.dart';
+import 'mac_vendor_screen.dart';
+import 'whois_screen.dart';
+import 'ssl_checker_screen.dart';
+import 'banner_grabber_screen.dart';
+import 'http_header_screen.dart';
+import 'email_security_screen.dart';
+import 'firewall_tester_screen.dart';
+import 'bandwidth_monitor_screen.dart';
+import 'network_connections_screen.dart';
+import 'wake_on_lan_screen.dart';
+import 'snmp_browser_screen.dart';
+import 'netbios_scanner_screen.dart';
 
 enum _NavItem {
   monitor('Monitor', Icons.monitor_heart),
@@ -28,11 +45,30 @@ enum _NavItem {
   nmap('Nmap Scanner', Icons.manage_search),
   speedTest('Speed Test', Icons.speed),
   myDevice('My Device', Icons.devices),
+  wifiAnalyzer('WiFi Analyzer', Icons.wifi),
   ssh('SSH Terminal', Icons.terminal),
   rdp('RDP Client', Icons.desktop_windows),
   vnc('VNC Viewer', Icons.monitor),
   putty('PuTTY', Icons.computer),
-  ftp('FTP / SFTP', Icons.folder_open);
+  ftp('FTP / SFTP', Icons.folder_open),
+  // Security Tools
+  sslChecker('SSL/TLS Checker', Icons.verified_user),
+  httpHeaders('HTTP Headers', Icons.http),
+  bannerGrabber('Banner Grabber', Icons.flag_outlined),
+  whois('Whois', Icons.info_outline),
+  emailSecurity('Email Security', Icons.email),
+  firewallTester('Firewall Tester', Icons.fireplace_outlined),
+  // Network Analysis
+  subnetCalc('Subnet Calculator', Icons.calculate),
+  ipGeo('IP Geolocation', Icons.location_on_outlined),
+  macVendor('MAC Vendor', Icons.settings_ethernet),
+  hashGen('Hash Generator', Icons.tag),
+  passwordGen('Password Generator', Icons.password),
+  bandwidth('Bandwidth Monitor', Icons.bar_chart),
+  connections('Net Connections', Icons.device_hub),
+  wakeOnLan('Wake on LAN', Icons.power_settings_new),
+  snmp('SNMP Browser', Icons.account_tree_outlined),
+  netbios('NetBIOS Scanner', Icons.lan_outlined);
 
   const _NavItem(this.label, this.icon);
   final String label;
@@ -64,19 +100,36 @@ class _WindowsDashboardState extends State<WindowsDashboard> {
   void dispose() { _clockTimer?.cancel(); super.dispose(); }
 
   Widget _buildContent() => switch (_selected) {
-    _NavItem.monitor    => _MonitorView(now: _now),
-    _NavItem.ping       => const PingScreen(),
-    _NavItem.traceroute => const TracerouteScreen(),
-    _NavItem.dns        => const DnsLookupScreen(),
-    _NavItem.arp        => const ArpScreen(),
-    _NavItem.nmap       => const NmapScreen(),
-    _NavItem.speedTest  => const SpeedTestScreen(),
-    _NavItem.myDevice   => const MyDeviceScreen(),
-    _NavItem.ssh        => const _SshLauncher(),
-    _NavItem.rdp        => const RdpScreen(),
-    _NavItem.vnc        => const VncScreen(),
-    _NavItem.putty      => const PuttyScreen(),
-    _NavItem.ftp        => const FtpSftpScreen(),
+    _NavItem.monitor      => _MonitorView(now: _now),
+    _NavItem.ping         => const PingScreen(),
+    _NavItem.traceroute   => const TracerouteScreen(),
+    _NavItem.dns          => const DnsLookupScreen(),
+    _NavItem.arp          => const ArpScreen(),
+    _NavItem.nmap         => const NmapScreen(),
+    _NavItem.speedTest    => const SpeedTestScreen(),
+    _NavItem.myDevice     => const MyDeviceScreen(),
+    _NavItem.wifiAnalyzer => const WifiAnalyzerScreen(),
+    _NavItem.ssh          => const _SshLauncher(),
+    _NavItem.rdp          => const RdpScreen(),
+    _NavItem.vnc          => const VncScreen(),
+    _NavItem.putty        => const PuttyScreen(),
+    _NavItem.ftp          => const FtpSftpScreen(),
+    _NavItem.sslChecker   => const SslCheckerScreen(),
+    _NavItem.httpHeaders  => const HttpHeaderScreen(),
+    _NavItem.bannerGrabber => const BannerGrabberScreen(),
+    _NavItem.whois        => const WhoisScreen(),
+    _NavItem.emailSecurity => const EmailSecurityScreen(),
+    _NavItem.firewallTester => const FirewallTesterScreen(),
+    _NavItem.subnetCalc   => const SubnetCalculatorScreen(),
+    _NavItem.ipGeo        => const IpGeolocationScreen(),
+    _NavItem.macVendor    => const MacVendorScreen(),
+    _NavItem.hashGen      => const HashGeneratorScreen(),
+    _NavItem.passwordGen  => const PasswordGeneratorScreen(),
+    _NavItem.bandwidth    => const BandwidthMonitorScreen(),
+    _NavItem.connections  => const NetworkConnectionsScreen(),
+    _NavItem.wakeOnLan    => const WakeOnLanScreen(),
+    _NavItem.snmp         => const SnmpBrowserScreen(),
+    _NavItem.netbios      => const NetBiosScannerScreen(),
   };
 
   @override
@@ -180,7 +233,8 @@ class _SidebarState extends State<_Sidebar> {
                 _SectionLabel('NETWORK TOOLS'),
                 for (final item in [_NavItem.monitor, _NavItem.ping,
                   _NavItem.traceroute, _NavItem.dns, _NavItem.arp,
-                  _NavItem.nmap, _NavItem.speedTest, _NavItem.myDevice])
+                  _NavItem.nmap, _NavItem.speedTest, _NavItem.myDevice,
+                  _NavItem.wifiAnalyzer])
                   _NavTile(item: item, selected: widget.selected == item,
                       badge: item == _NavItem.monitor && widget.dm.offlineCount > 0
                           ? '${widget.dm.offlineCount}' : null,
@@ -191,6 +245,25 @@ class _SidebarState extends State<_Sidebar> {
                 _SectionLabel('REMOTE ACCESS'),
                 for (final item in [_NavItem.ssh, _NavItem.rdp, _NavItem.vnc,
                   _NavItem.putty, _NavItem.ftp])
+                  _NavTile(item: item, selected: widget.selected == item,
+                      onTap: () => widget.onSelect(item)),
+                const SizedBox(height: 6),
+                const Divider(height: 1, color: Color(0xFF1E2D45)),
+                const SizedBox(height: 6),
+                _SectionLabel('SECURITY TOOLS'),
+                for (final item in [_NavItem.sslChecker, _NavItem.httpHeaders,
+                  _NavItem.bannerGrabber, _NavItem.whois, _NavItem.emailSecurity,
+                  _NavItem.firewallTester])
+                  _NavTile(item: item, selected: widget.selected == item,
+                      onTap: () => widget.onSelect(item)),
+                const SizedBox(height: 6),
+                const Divider(height: 1, color: Color(0xFF1E2D45)),
+                const SizedBox(height: 6),
+                _SectionLabel('NETWORK ANALYSIS'),
+                for (final item in [_NavItem.subnetCalc, _NavItem.ipGeo,
+                  _NavItem.macVendor, _NavItem.hashGen, _NavItem.passwordGen,
+                  _NavItem.bandwidth, _NavItem.connections, _NavItem.wakeOnLan,
+                  _NavItem.snmp, _NavItem.netbios])
                   _NavTile(item: item, selected: widget.selected == item,
                       onTap: () => widget.onSelect(item)),
               ],
