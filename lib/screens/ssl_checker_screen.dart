@@ -19,12 +19,12 @@ class _State extends State<SslCheckerScreen> {
     setState(() { _loading = true; _error = null; _result = null; });
     try {
       final res = await Process.run('powershell', ['-NoProfile', '-Command', '''
-\$host = "$host"
+\$targetHost = "$host"
 \$port = 443
 try {
-  \$tcpClient = [System.Net.Sockets.TcpClient]::new(\$host, \$port)
+  \$tcpClient = [System.Net.Sockets.TcpClient]::new(\$targetHost, \$port)
   \$sslStream = [System.Net.Security.SslStream]::new(\$tcpClient.GetStream(), \$false, { \$true })
-  \$sslStream.AuthenticateAsClient(\$host)
+  \$sslStream.AuthenticateAsClient(\$targetHost)
   \$cert = \$sslStream.RemoteCertificate
   \$cert2 = [System.Security.Cryptography.X509Certificates.X509Certificate2]::\$cert
   Write-Output "Subject=\$(\$cert.Subject)"

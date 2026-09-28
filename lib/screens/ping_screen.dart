@@ -13,7 +13,7 @@ class PingScreen extends StatefulWidget {
 
 class _PingScreenState extends State<PingScreen> {
   final _hostCtrl = TextEditingController();
-  final _countCtrl = TextEditingController(text: '0'); // 0 = continuous
+
 
   bool _running = false;
   Timer? _timer;

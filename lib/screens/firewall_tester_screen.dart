@@ -13,6 +13,7 @@ class _State extends State<FirewallTesterScreen> {
   bool _loading = false;
   List<_PortResult> _results = [];
   int _progress = 0;
+  int _totalPorts = 0;
 
   static const _presets = <String, List<int>>{
     'Web': [80, 443, 8080, 8443],
@@ -35,7 +36,7 @@ class _State extends State<FirewallTesterScreen> {
       ports = _presets[_selectedPreset] ?? [];
     }
     if (ports.isEmpty) return;
-    setState(() { _loading = true; _results = []; _progress = 0; });
+    setState(() { _loading = true; _results = []; _progress = 0; _totalPorts = ports.length; });
     final results = <_PortResult>[];
     const batchSize = 20;
     for (var i = 0; i < ports.length; i += batchSize) {
@@ -98,7 +99,7 @@ class _State extends State<FirewallTesterScreen> {
           ]),
           if (_loading) ...[
             const SizedBox(height: 8),
-            LinearProgressIndicator(value: _presets[_selectedPreset] == null ? null : _progress / (_presets[_selectedPreset]!.length),
+            LinearProgressIndicator(value: _totalPorts == 0 ? null : _progress / _totalPorts,
               color: const Color(0xFF00D4FF), backgroundColor: const Color(0xFF1E2D45)),
             const SizedBox(height: 4),
             Text('Testing port $_progress...', style: const TextStyle(color: Colors.white38, fontSize: 11)),

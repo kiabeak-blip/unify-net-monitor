@@ -48,7 +48,7 @@ class _SpeedTestScreenState extends State<SpeedTestScreen>
   late final AnimationController _gaugeCtrl;
   late final AnimationController _pulseCtrl;
   late final AnimationController _rotateCtrl;
-  late final AnimationController _numberCtrl;
+
 
   late Animation<double> _gaugeAnim;
   late Animation<double> _pulseAnim;
@@ -82,7 +82,7 @@ class _SpeedTestScreenState extends State<SpeedTestScreen>
     _gaugeCtrl.dispose();
     _pulseCtrl.dispose();
     _rotateCtrl.dispose();
-    _numberCtrl.dispose();
+
     _numberTimer?.cancel();
     _proc?.kill();
     super.dispose();

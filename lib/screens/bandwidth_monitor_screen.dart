@@ -11,6 +11,7 @@ class BandwidthMonitorScreen extends StatefulWidget {
 class _State extends State<BandwidthMonitorScreen> {
   Timer? _timer;
   bool _running = false;
+  String? _pollError;
   List<_IfaceStats> _ifaces = [];
   final Map<String, List<FlSpot>> _rxHistory = {};
   final Map<String, List<FlSpot>> _txHistory = {};
@@ -73,7 +74,9 @@ Get-NetAdapterStatistics | Where-Object { $_.ReceivedBytes -gt 0 -or $_.SentByte
       }
       _tick++;
       if (mounted) setState(() => _ifaces = ifaces);
-    } catch (_) {}
+    } catch (e) {
+      if (mounted) setState(() => _pollError = e.toString());
+    }
   }
 
   String _fmt(double bytesPerSec) {
@@ -110,7 +113,14 @@ Get-NetAdapterStatistics | Where-Object { $_.ReceivedBytes -gt 0 -or $_.SentByte
           const SizedBox(height: 4),
           const Text('Real-time network interface traffic (updated every 2s)', style: TextStyle(color: Colors.white38, fontSize: 12)),
           const SizedBox(height: 16),
-          if (_ifaces.isEmpty)
+          if (_pollError != null)
+            Expanded(child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.error_outline, color: Colors.redAccent, size: 36),
+              const SizedBox(height: 10),
+              Text('Failed to read adapter stats:\n$_pollError', textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
+            ])))
+          else if (_ifaces.isEmpty)
             const Expanded(child: Center(child: CircularProgressIndicator(color: Color(0xFF00D4FF))))
           else
             Expanded(child: ListView.builder(

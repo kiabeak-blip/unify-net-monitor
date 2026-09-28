@@ -35,6 +35,7 @@ class TracerouteScreen extends StatefulWidget {
 class _TracerouteScreenState extends State<TracerouteScreen> {
   final _hostCtrl = TextEditingController();
   bool _running = false;
+  bool _stopped = false;
   Process? _process;
   final List<_HopResult> _hops = [];
   String? _header;
@@ -57,6 +58,7 @@ class _TracerouteScreenState extends State<TracerouteScreen> {
     final host = _hostCtrl.text.trim();
     if (host.isEmpty) return;
 
+    _stopped = false;
     setState(() {
       _running = true;
       _hops.clear();
@@ -75,7 +77,7 @@ class _TracerouteScreenState extends State<TracerouteScreen> {
           .transform(const SystemEncoding().decoder)
           .transform(const LineSplitter())
           .listen(_parseLine, onDone: () {
-        if (mounted) setState(() { _running = false; _complete = true; });
+        if (!_stopped && mounted) setState(() { _running = false; _complete = true; });
       });
 
       _process!.stderr.transform(const SystemEncoding().decoder).listen((_) {});
@@ -85,6 +87,7 @@ class _TracerouteScreenState extends State<TracerouteScreen> {
   }
 
   void _stop() {
+    _stopped = true;
     _process?.kill();
     _process = null;
     if (mounted) setState(() => _running = false);
