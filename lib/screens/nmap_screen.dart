@@ -43,6 +43,8 @@ class _NmapScreenState extends State<NmapScreen> {
   String _rawOutput = '';
   String? _error;
   bool _nmapMissing = false;
+  bool _installingNmap = false;
+  String? _installStatus;
   String _nmapPath = 'nmap'; // resolved on init
 
   @override
@@ -93,6 +95,29 @@ class _NmapScreenState extends State<NmapScreen> {
     }
 
     setState(() => _nmapMissing = true);
+  }
+
+  Future<void> _installNmap() async {
+    setState(() { _installingNmap = true; _installStatus = 'Installing Nmap via winget...'; });
+    try {
+      final res = await Process.run(
+        'winget', ['install', '--id', 'Insecure.Nmap', '--silent', '--accept-package-agreements', '--accept-source-agreements'],
+        runInShell: true,
+        stdoutEncoding: const SystemEncoding(),
+        stderrEncoding: const SystemEncoding(),
+      ).timeout(const Duration(minutes: 3));
+      if (res.exitCode == 0 || res.exitCode == -1978335189) {
+        // exitCode -1978335189 = already installed (APPINSTALLER_ERROR_ALREADY_INSTALLED)
+        if (mounted) setState(() => _installStatus = 'Nmap installed! Detecting...');
+        await _checkNmap();
+        if (mounted) setState(() { _installingNmap = false; _installStatus = null; });
+      } else {
+        final err = res.stderr.toString().trim();
+        if (mounted) setState(() { _installingNmap = false; _installStatus = 'Install failed: $err\nTry manually: winget install Insecure.Nmap'; });
+      }
+    } catch (e) {
+      if (mounted) setState(() { _installingNmap = false; _installStatus = 'Error: $e'; });
+    }
   }
 
   Future<void> _start() async {
@@ -270,19 +295,37 @@ class _NmapScreenState extends State<NmapScreen> {
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: const Color(0xFFFF4466).withOpacity(0.3)),
       ),
-      child: Row(
-        children: [
-          const Icon(Icons.warning_amber_rounded,
-              color: Color(0xFFFF4466), size: 18),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.warning_amber_rounded, color: Color(0xFFFF4466), size: 18),
           const SizedBox(width: 10),
-          const Expanded(
-            child: Text(
-              'Nmap is not installed. Install it from nmap.org or via winget: winget install Insecure.Nmap',
-              style: TextStyle(color: Color(0xFFFF4466), fontSize: 12),
+          const Expanded(child: Text('Nmap is not installed.',
+              style: TextStyle(color: Color(0xFFFF4466), fontSize: 13, fontWeight: FontWeight.w600))),
+          if (!_installingNmap)
+            ElevatedButton.icon(
+              onPressed: _installNmap,
+              icon: const Icon(Icons.download, size: 14),
+              label: const Text('Install Nmap', style: TextStyle(fontSize: 12)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00D4FF), foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              ),
             ),
-          ),
+        ]),
+        if (_installingNmap) ...[
+          const SizedBox(height: 8),
+          const LinearProgressIndicator(color: Color(0xFF00D4FF), backgroundColor: Color(0xFF1E2D45)),
+          const SizedBox(height: 6),
+          Text(_installStatus ?? 'Installing...', style: const TextStyle(color: Colors.white54, fontSize: 11)),
+        ] else if (_installStatus != null) ...[
+          const SizedBox(height: 6),
+          Text(_installStatus!, style: const TextStyle(color: Colors.white54, fontSize: 11)),
+        ] else ...[
+          const SizedBox(height: 4),
+          const Text('Click "Install Nmap" to install automatically, or run: winget install Insecure.Nmap',
+              style: TextStyle(color: Color(0xFFFF4466), fontSize: 11)),
         ],
-      ),
+      ]),
     );
   }
 

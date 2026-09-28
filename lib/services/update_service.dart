@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:path/path.dart' as p;
 
-const _currentVersion = '1.2.4';
+const _currentVersion = '1.2.5';
 const _githubRepo = 'kiabeak-blip/unify-net-monitor';
 const _releasesApiUrl =
     'https://api.github.com/repos/$_githubRepo/releases/latest';
@@ -79,17 +79,27 @@ class UpdateService {
     return dest;
   }
 
-  /// Launches the installer via cmd /c start, which calls Win32 ShellExecute.
-  /// ShellExecute respects the exe's admin manifest and triggers UAC correctly.
-  /// The /VERYSILENT flag is passed so Inno Setup installs without showing a GUI.
-  /// Inno Setup's InitializeSetup() runs taskkill to close this app — no exit(0) needed.
+  /// Launches the installer via VBScript + ShellExecute "runas".
+  /// This avoids all Windows argument-quoting pitfalls (the cmd /c start
+  /// approach re-escapes embedded quotes, appending a stray backslash to the
+  /// path). VBScript string concatenation sidesteps the issue entirely, and
+  /// wscript.exe runs detached so it survives after the app calls exit(0).
   static Future<void> runInstaller(String path) async {
-    // Wrap path in quotes in case it contains spaces (temp folder user name may have spaces).
-    // cmd /c start "" launches via ShellExecute — the correct UAC trigger for manifested exes.
+    // Double backslashes for VBScript string literal
+    final vbsPath = p.join(Directory.systemTemp.path,
+        'unm_launch_${DateTime.now().millisecondsSinceEpoch}.vbs');
+    // Build args as a separate VBScript variable to avoid any quote nesting
+    final vbs = [
+      'Dim exePath',
+      'exePath = "$path"',
+      'Dim oShell',
+      'Set oShell = CreateObject("Shell.Application")',
+      'oShell.ShellExecute exePath, "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART", "", "runas", 1',
+    ].join('\r\n');
+    await File(vbsPath).writeAsString(vbs);
     await Process.start(
-      'cmd',
-      ['/c', 'start', '', '"$path"',
-        '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'],
+      'wscript.exe',
+      ['//nologo', vbsPath],
       runInShell: false,
       mode: ProcessStartMode.detached,
     );
