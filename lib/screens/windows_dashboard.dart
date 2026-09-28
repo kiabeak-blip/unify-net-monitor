@@ -1,5 +1,6 @@
 // lib/screens/windows_dashboard.dart
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/device.dart';
@@ -965,7 +966,9 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       if (!mounted) return;
       setState(() => _phase = _Phase.installing);
       await UpdateService.runInstaller(path);
-      if (mounted) Navigator.pop(context);
+      // Close the app so the installer can replace the running exe
+      await Future.delayed(const Duration(milliseconds: 800));
+      exit(0);
     } catch (e) {
       if (mounted) setState(() { _phase = _Phase.idle; _error = e.toString(); });
     }
