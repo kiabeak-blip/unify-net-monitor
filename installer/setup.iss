@@ -3,7 +3,7 @@
 ; Run: iscc setup.iss
 
 #define AppName      "Unify Net Monitor"
-#define AppVersion   "1.0.0"
+#define AppVersion   "1.1.0"
 #define AppPublisher "Unify Technologies"
 #define AppExeName   "network_monitor.exe"
 #define AppId        "{{8B3F2C4A-9D7E-4F1B-A6C5-2E8D0B1F3A7C}"
@@ -50,11 +50,8 @@ Name: "taskbaricon";     Description: "Pin to &taskbar";              GroupDescr
 Name: "quicklaunchicon"; Description: "Add to Start &Menu";           GroupDescription: "Shortcuts:"; Flags: checkedonce
 
 [Files]
-; Main executable and all required files
-Source: "{#SourceDir}\{#AppExeName}";          DestDir: "{app}"; Flags: ignoreversion
-Source: "{#SourceDir}\flutter_windows.dll";    DestDir: "{app}"; Flags: ignoreversion
-Source: "{#SourceDir}\speech_to_text_windows_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "{#SourceDir}\data\*";                 DestDir: "{app}\data"; Flags: ignoreversion recursesubdirs createallsubdirs
+; All files from the Release folder — exe, every DLL, and data assets
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 ; Start Menu
