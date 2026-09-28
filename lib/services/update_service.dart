@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:path/path.dart' as p;
 
-const _currentVersion = '1.1.5';
+const _currentVersion = '1.1.6';
 const _githubRepo = 'kiabeak-blip/unify-net-monitor';
 const _releasesApiUrl =
     'https://api.github.com/repos/$_githubRepo/releases/latest';
@@ -79,9 +79,16 @@ class UpdateService {
     return dest;
   }
 
-  /// Launches the installer (silent /SILENT flag lets Inno run without wizard).
+  /// Launches the installer elevated via PowerShell RunAs, then exits the app.
   static Future<void> runInstaller(String path) async {
-    await Process.start(path, ['/SILENT'], runInShell: false);
+    // Use Start-Process -Verb RunAs so UAC triggers and the installer gets
+    // the admin rights it needs to replace files in Program Files.
+    await Process.start(
+      'powershell',
+      ['-NoProfile', '-Command',
+        'Start-Process -FilePath "$path" -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Verb RunAs'],
+      runInShell: false,
+    );
   }
 
   static String? _assetUrl(Map<String, dynamic> json) {
