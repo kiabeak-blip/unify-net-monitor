@@ -3,7 +3,7 @@
 ; Run: iscc setup.iss
 
 #define AppName      "Unify Net Monitor"
-#define AppVersion   "1.1.4"
+#define AppVersion   "1.1.5"
 #define AppPublisher "Unify Technologies"
 #define AppExeName   "network_monitor.exe"
 #define AppId        "{{8B3F2C4A-9D7E-4F1B-A6C5-2E8D0B1F3A7C}"

@@ -12,11 +12,13 @@ class _State extends State<NetBiosScannerScreen> {
   final _targetCtrl = TextEditingController();
   bool _loading = false;
   bool _cancelled = false;
+  bool _scanned = false;
   String? _error;
   List<_NetBiosResult> _results = [];
   bool _scanRange = false;
   int _progress = 0;
   int _total = 0;
+  int _liveHosts = 0;
 
   @override
   void dispose() {
@@ -29,7 +31,7 @@ class _State extends State<NetBiosScannerScreen> {
   Future<void> _scan() async {
     final target = _targetCtrl.text.trim();
     if (target.isEmpty) return;
-    setState(() { _loading = true; _cancelled = false; _error = null; _results = []; _progress = 0; _total = 0; });
+    setState(() { _loading = true; _cancelled = false; _scanned = false; _error = null; _results = []; _progress = 0; _total = 0; _liveHosts = 0; });
     try {
       if (_scanRange) {
         await _scanSubnet(target);
@@ -39,7 +41,7 @@ class _State extends State<NetBiosScannerScreen> {
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
     }
-    if (mounted) setState(() => _loading = false);
+    if (mounted) setState(() { _loading = false; _scanned = true; });
   }
 
   Future<void> _scanHost(String target) async {
@@ -72,7 +74,9 @@ class _State extends State<NetBiosScannerScreen> {
       if (mounted) setState(() => _progress = i + batch.length);
     }
 
-    if (_cancelled || liveHosts.isEmpty) return;
+    if (_cancelled) return;
+    if (mounted) setState(() => _liveHosts = liveHosts.length);
+    if (liveHosts.isEmpty) return;
 
     // Second: run nbtstat only on live hosts, in parallel batches of 20
     setState(() { _total = liveHosts.length; _progress = 0; });
@@ -103,8 +107,8 @@ class _State extends State<NetBiosScannerScreen> {
           .timeout(const Duration(seconds: 3));
       final lines = res.stdout.toString().split('\n');
       final result = _parseNbtstat(ip, lines);
-      // Only return if we got something useful
-      if (result.hostname.isEmpty && result.entries.isEmpty) return null;
+      // Return if we got any info at all
+      if (result.hostname.isEmpty && result.entries.isEmpty && result.mac.isEmpty) return null;
       return result;
     } catch (_) { return null; }
   }
@@ -196,7 +200,9 @@ class _State extends State<NetBiosScannerScreen> {
                 style: const TextStyle(color: Colors.white38, fontSize: 11, fontFamily: 'monospace')),
             ]),
             const SizedBox(height: 4),
-            Text(_progress < _total && _results.isEmpty ? 'Ping sweep — finding live hosts...' : 'Querying NetBIOS on live hosts...',
+            Text(_liveHosts == 0 && _results.isEmpty
+                ? 'Phase 1 — Ping sweep, finding live hosts...'
+                : 'Phase 2 — Querying NetBIOS on $_liveHosts live host${_liveHosts == 1 ? "" : "s"}...',
               style: const TextStyle(color: Colors.white24, fontSize: 11)),
           ],
           if (_error != null) ...[const SizedBox(height: 12), Text(_error!, style: const TextStyle(color: Colors.redAccent))],
@@ -206,7 +212,23 @@ class _State extends State<NetBiosScannerScreen> {
               child: Text('${_results.length} NetBIOS host${_results.length == 1 ? '' : 's'} found',
                 style: const TextStyle(color: Color(0xFF00FF88), fontSize: 12, fontWeight: FontWeight.w600))),
           if (!_loading && _results.isEmpty && _error == null)
-            const Expanded(child: Center(child: Text('Enter a host or subnet to scan', style: TextStyle(color: Colors.white24))))
+            Expanded(child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Icon(_scanned ? Icons.search_off : Icons.manage_search,
+                  size: 40, color: Colors.white12),
+              const SizedBox(height: 12),
+              Text(
+                _scanned
+                  ? (_liveHosts == 0
+                      ? 'No hosts responded to ping on this subnet'
+                      : 'Found $_liveHosts live host${_liveHosts == 1 ? "" : "s"} but none had NetBIOS names')
+                  : 'Enter a host or subnet to scan',
+                style: const TextStyle(color: Colors.white24, fontSize: 13)),
+              if (_scanned && _liveHosts > 0) ...[
+                const SizedBox(height: 8),
+                const Text('NetBIOS may be disabled on those devices (common on Windows 10/11)',
+                  style: TextStyle(color: Colors.white12, fontSize: 11)),
+              ],
+            ])))
           else
             Expanded(child: ListView.builder(
               itemCount: _results.length,
