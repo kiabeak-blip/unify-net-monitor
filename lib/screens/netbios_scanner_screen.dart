@@ -16,6 +16,7 @@ class _State extends State<NetBiosScannerScreen> {
   String? _error;
   List<_NetBiosResult> _results = [];
   bool _scanRange = false;
+  bool _lastWasSingleHost = false; // tracks empty-state message without mutating _scanRange
   int _progress = 0;
   int _total = 0;
   int _liveHosts = 0;
@@ -32,7 +33,7 @@ class _State extends State<NetBiosScannerScreen> {
     if (_loading) return; // prevent concurrent scans
     final target = _targetCtrl.text.trim();
     if (target.isEmpty) return;
-    setState(() { _loading = true; _cancelled = false; _scanned = false; _error = null; _results = []; _progress = 0; _total = 0; _liveHosts = 0; });
+    setState(() { _loading = true; _cancelled = false; _scanned = false; _error = null; _results = []; _progress = 0; _total = 0; _liveHosts = 0; _lastWasSingleHost = false; });
     try {
       if (_scanRange) {
         await _scanSubnet(target);
@@ -46,7 +47,7 @@ class _State extends State<NetBiosScannerScreen> {
   }
 
   Future<void> _scanHost(String target) async {
-    // _liveHosts stays 0 for single-host mode — used to pick correct empty message
+    if (mounted) setState(() => _lastWasSingleHost = true);
     final result = await _queryNbtstat(target);
     if (mounted) setState(() => _results = result != null ? [result] : []);
   }
@@ -55,11 +56,11 @@ class _State extends State<NetBiosScannerScreen> {
     var base = subnet.replaceAll(RegExp(r'/\d+$'), '').trim();
     final parts = base.split('.');
 
-    // If a full IP was entered (4 octets), scan that one host directly
-    // Temporarily unset _scanRange context so empty-state message is correct
+    // If a full IP was entered (4 octets), treat as single-host — don't mutate _scanRange
     if (parts.length == 4 && int.tryParse(parts[3]) != null) {
+      if (mounted) setState(() => _lastWasSingleHost = true);
       final result = await _queryNbtstat(base);
-      if (mounted) setState(() { _results = result != null ? [result] : []; _scanRange = false; });
+      if (mounted) setState(() => _results = result != null ? [result] : []);
       return;
     }
 
@@ -75,7 +76,7 @@ class _State extends State<NetBiosScannerScreen> {
     final ips = List.generate(254, (i) => '$prefix.${i + 1}');
     setState(() { _total = ips.length; _progress = 0; });
 
-    // First: ping sweep — smaller batches to avoid Windows ICMP rate limiting
+    // Phase 1: ping sweep to find live hosts quickly
     final liveHosts = <String>[];
     const pingBatch = 15;
     for (var i = 0; i < ips.length && !_cancelled; i += pingBatch) {
@@ -85,21 +86,21 @@ class _State extends State<NetBiosScannerScreen> {
         if (hits[j]) liveHosts.add(batch[j]);
       }
       if (mounted) setState(() => _progress = i + batch.length);
-      // Brief pause between batches so Windows ICMP rate limiter clears
       if (i + pingBatch < ips.length && !_cancelled) {
         await Future.delayed(const Duration(milliseconds: 100));
       }
     }
 
     if (_cancelled) return;
-    if (mounted) setState(() => _liveHosts = liveHosts.length);
-    if (liveHosts.isEmpty) return;
 
-    // Second: run nbtstat only on live hosts, in parallel batches of 20
-    if (mounted) setState(() { _total = liveHosts.length; _progress = 0; });
+    // If ping sweep found nothing, some networks block ICMP — query all IPs directly
+    final nbtTargets = liveHosts.isNotEmpty ? liveHosts : ips;
+    if (mounted) setState(() { _liveHosts = liveHosts.length; _total = nbtTargets.length; _progress = 0; });
+
+    // Phase 2: nbtstat on targets in batches of 20
     const nbtBatch = 20;
-    for (var i = 0; i < liveHosts.length && !_cancelled; i += nbtBatch) {
-      final batch = liveHosts.sublist(i, (i + nbtBatch).clamp(0, liveHosts.length));
+    for (var i = 0; i < nbtTargets.length && !_cancelled; i += nbtBatch) {
+      final batch = nbtTargets.sublist(i, (i + nbtBatch).clamp(0, nbtTargets.length));
       final results = await Future.wait(batch.map(_queryNbtstat));
       for (final r in results) {
         if (r != null && mounted) {
@@ -217,9 +218,11 @@ class _State extends State<NetBiosScannerScreen> {
                 style: const TextStyle(color: Colors.white38, fontSize: 11, fontFamily: 'monospace')),
             ]),
             const SizedBox(height: 4),
-            Text(_liveHosts == 0 && _results.isEmpty
+            Text(_progress < _total && _liveHosts == 0 && _results.isEmpty
                 ? 'Phase 1 — Ping sweep, finding live hosts...'
-                : 'Phase 2 — Querying NetBIOS on $_liveHosts live host${_liveHosts == 1 ? "" : "s"}...',
+                : _liveHosts == 0 && _results.isEmpty
+                    ? 'Ping found no hosts — querying all IPs directly...'
+                    : 'Phase 2 — Querying NetBIOS on $_liveHosts live host${_liveHosts == 1 ? "" : "s"}...',
               style: const TextStyle(color: Colors.white24, fontSize: 11)),
           ],
           if (_error != null) ...[const SizedBox(height: 12), Text(_error!, style: const TextStyle(color: Colors.redAccent))],
@@ -235,11 +238,11 @@ class _State extends State<NetBiosScannerScreen> {
               const SizedBox(height: 12),
               Text(
                 _scanned
-                  ? (_scanRange
-                      ? (_liveHosts == 0
-                          ? 'No hosts responded to ping on this subnet'
-                          : 'Found $_liveHosts live host${_liveHosts == 1 ? "" : "s"} but none had NetBIOS names')
-                      : 'No NetBIOS names found on this host')
+                  ? (_lastWasSingleHost
+                      ? 'No NetBIOS names found on this host'
+                      : (_liveHosts == 0
+                          ? 'No NetBIOS names found on this subnet'
+                          : 'Found $_liveHosts live host${_liveHosts == 1 ? "" : "s"} but none had NetBIOS names'))
                   : 'Enter a host or subnet to scan',
                 style: const TextStyle(color: Colors.white24, fontSize: 13)),
               if (_scanned) ...[

@@ -1,6 +1,6 @@
 name: network_monitor
 description: Unify Net Monitor - Professional Network Monitoring & Remote Access Tool
-version: 1.2.7+20
+version: 1.2.8+21
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
