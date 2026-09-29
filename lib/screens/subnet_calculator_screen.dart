@@ -13,6 +13,9 @@ class _State extends State<SubnetCalculatorScreen> {
   _SubnetResult? _result;
   String? _error;
 
+  @override
+  void dispose() { _ipCtrl.dispose(); _cidrCtrl.dispose(); super.dispose(); }
+
   void _calculate() {
     setState(() { _error = null; _result = null; });
     final ip = _ipCtrl.text.trim();

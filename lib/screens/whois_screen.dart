@@ -12,6 +12,9 @@ class _State extends State<WhoisScreen> {
   bool _loading = false;
   String? _result, _error;
 
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
   Future<void> _lookup() async {
     final target = _ctrl.text.trim();
     if (target.isEmpty) return;

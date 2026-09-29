@@ -13,6 +13,9 @@ class _State extends State<EmailSecurityScreen> {
   _EmailResult? _result;
   String? _error;
 
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
   Future<void> _check() async {
     final domain = _ctrl.text.trim().replaceAll(RegExp(r'^.*@'), '');
     if (domain.isEmpty) return;

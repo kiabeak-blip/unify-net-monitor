@@ -16,6 +16,14 @@ class _State extends State<SnmpBrowserScreen> {
   List<_OidEntry> _results = [];
   String _version = 'v2c';
 
+  @override
+  void dispose() {
+    _hostCtrl.dispose();
+    _communityCtrl.dispose();
+    _oidCtrl.dispose();
+    super.dispose();
+  }
+
   static const _quickOids = <String, String>{
     'System Info': '1.3.6.1.2.1.1',
     'Interfaces': '1.3.6.1.2.1.2',
@@ -118,7 +126,7 @@ if (\$snmpwalk) {
           ]),
           const SizedBox(height: 8),
           Wrap(spacing: 6, runSpacing: 6, children: _quickOids.entries.map((e) => GestureDetector(
-            onTap: () { _oidCtrl.text = e.value; },
+            onTap: () { _oidCtrl.text = e.value; _query(); },
             child: Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(color: const Color(0xFF1A2035), borderRadius: BorderRadius.circular(5), border: Border.all(color: const Color(0xFF2A3F5F))),
               child: Text(e.key, style: const TextStyle(color: Colors.white54, fontSize: 11))))).toList()),

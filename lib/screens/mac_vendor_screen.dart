@@ -13,6 +13,9 @@ class _State extends State<MacVendorScreen> {
   bool _loading = false;
   String? _vendor, _error, _mac;
 
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
   Future<void> _lookup() async {
     final raw = _ctrl.text.trim();
     if (raw.isEmpty) return;

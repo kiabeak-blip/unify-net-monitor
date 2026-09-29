@@ -15,6 +15,9 @@ class _State extends State<WakeOnLanScreen> {
   String? _result, _error;
   final List<_WolEntry> _history = [];
 
+  @override
+  void dispose() { _macCtrl.dispose(); _ipCtrl.dispose(); _portCtrl.dispose(); super.dispose(); }
+
   Future<void> _send() async {
     final raw = _macCtrl.text.trim().replaceAll(RegExp(r'[:\-\. ]'), '').toUpperCase();
     if (raw.length != 12) { setState(() => _error = 'Invalid MAC address — must be 12 hex characters'); return; }
