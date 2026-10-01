@@ -80,6 +80,7 @@ class _SshScreenState extends State<SshScreen> {
   }
 
   void _appendLine(String text, {_LineType type = _LineType.output}) {
+    if (!mounted) return;
     setState(() => _lines.add(_TermLine(text, type)));
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollCtrl.hasClients) {
@@ -132,6 +133,7 @@ class _SshScreenState extends State<SshScreen> {
             utf8.decode(data, allowMalformed: true), type: _LineType.error),
       );
 
+      if (!mounted) return;
       setState(() {
         _connected = true;
         _connecting = false;
@@ -141,6 +143,7 @@ class _SshScreenState extends State<SshScreen> {
         _cmdFocus.requestFocus();
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _connecting = false;
         _connectError = e.toString();

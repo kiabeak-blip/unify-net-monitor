@@ -81,6 +81,7 @@ class _VncScreenState extends State<VncScreen> {
       final host = '${p.host}:${p.port}';
       await Process.start(_detectedViewer!, [host],
           mode: ProcessStartMode.detached);
+      if (!mounted) return;
       setState(() {
         final idx = _profiles.indexWhere((x) => x.id == p.id);
         if (idx >= 0) _profiles[idx] = p.copyWith(lastUsed: DateTime.now());
@@ -211,7 +212,12 @@ class _VncScreenState extends State<VncScreen> {
           ),
         ],
       ),
-    );
+    ).whenComplete(() {
+      hostCtrl.dispose();
+      portCtrl.dispose();
+      nameCtrl.dispose();
+      passCtrl.dispose();
+    });
   }
 
   @override

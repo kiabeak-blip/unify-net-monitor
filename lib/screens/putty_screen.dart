@@ -80,6 +80,7 @@ class _PuttyScreenState extends State<PuttyScreen> {
         if (p.username.isNotEmpty) ...['-l', p.username],
       ];
       await Process.start(_puttyPath!, args, mode: ProcessStartMode.detached);
+      if (!mounted) return;
       setState(() {
         final idx = _profiles.indexWhere((x) => x.id == p.id);
         if (idx >= 0) _profiles[idx] = p.copyWith(lastUsed: DateTime.now());
@@ -229,7 +230,12 @@ class _PuttyScreenState extends State<PuttyScreen> {
           ],
         ),
       ),
-    );
+    ).whenComplete(() {
+      hostCtrl.dispose();
+      portCtrl.dispose();
+      userCtrl.dispose();
+      nameCtrl.dispose();
+    });
   }
 
   @override

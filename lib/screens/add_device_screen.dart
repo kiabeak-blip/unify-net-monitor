@@ -146,14 +146,16 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isAdding = true);
-
-    final manager = context.read<DeviceManager>();
-    await manager.addManualDevice(
-      _nameCtrl.text.trim(),
-      _ipCtrl.text.trim(),
-    );
-
-    if (mounted) Navigator.pop(context);
+    try {
+      final manager = context.read<DeviceManager>();
+      await manager.addManualDevice(
+        _nameCtrl.text.trim(),
+        _ipCtrl.text.trim(),
+      );
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      if (mounted) setState(() => _isAdding = false);
+    }
   }
 
   @override

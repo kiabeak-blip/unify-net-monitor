@@ -115,7 +115,7 @@ class DeviceDetailScreen extends StatelessWidget {
           ),
         ],
       ),
-    );
+    ).whenComplete(() => ctrl.dispose());
   }
 }
 

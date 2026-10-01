@@ -55,6 +55,7 @@ class _RdpScreenState extends State<RdpScreen> {
           mode: ProcessStartMode.detached);
 
       // Update last used
+      if (!mounted) return;
       setState(() {
         final idx = _profiles.indexWhere((p) => p.id == profile.id);
         if (idx >= 0) {
@@ -304,7 +305,12 @@ class _RdpScreenState extends State<RdpScreen> {
           ],
         ),
       ),
-    );
+    ).whenComplete(() {
+      hostCtrl.dispose();
+      portCtrl.dispose();
+      userCtrl.dispose();
+      nameCtrl.dispose();
+    });
   }
 
   void _deleteProfile(_RdpProfile profile) {

@@ -138,6 +138,7 @@ class _FtpSftpScreenState extends State<FtpSftpScreen>
         }
       }
 
+      if (!mounted) return;
       setState(() {
         final idx = _profiles.indexWhere((x) => x.id == p.id);
         if (idx >= 0) _profiles[idx] = p.copyWith(lastUsed: DateTime.now());
@@ -302,7 +303,13 @@ class _FtpSftpScreenState extends State<FtpSftpScreen>
           ],
         ),
       ),
-    );
+    ).whenComplete(() {
+      hostCtrl.dispose();
+      portCtrl.dispose();
+      userCtrl.dispose();
+      passCtrl.dispose();
+      nameCtrl.dispose();
+    });
   }
 
   static int _defaultPort(_Protocol p) =>

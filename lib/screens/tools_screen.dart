@@ -199,7 +199,10 @@ class ToolsScreen extends StatelessWidget {
           ),
         ],
       ),
-    );
+    ).whenComplete(() {
+      hostCtrl.dispose();
+      portCtrl.dispose();
+    });
   }
 }
 

@@ -26,6 +26,13 @@ class _State extends State<FirewallTesterScreen> {
 
   String _selectedPreset = 'Common';
 
+  @override
+  void dispose() {
+    _hostCtrl.dispose();
+    _customPortCtrl.dispose();
+    super.dispose();
+  }
+
   Future<void> _test() async {
     final host = _hostCtrl.text.trim();
     if (host.isEmpty) return;
