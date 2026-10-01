@@ -103,18 +103,29 @@ class DeviceManager extends ChangeNotifier {
 
     final discovered = <String>{};
 
+    // Throttle UI updates: notify at most once per second during scan
+    DateTime _lastNotify = DateTime(0);
+    void _throttledNotify() {
+      final now = DateTime.now();
+      if (now.difference(_lastNotify).inMilliseconds >= 500) {
+        _lastNotify = now;
+        notifyListeners();
+      }
+    }
+
     await for (final device in NetworkScanner.scanSubnet(
       subnet: subnet,
       onProgress: (scanned, total) {
         _scanProgress = scanned;
         _scanTotal = total;
-        notifyListeners();
+        _throttledNotify();
       },
     )) {
       discovered.add(device.ip);
       _upsertDevice(device);
-      notifyListeners();
+      _throttledNotify();
     }
+    notifyListeners(); // final flush
 
     // Mark previously seen auto-discovered devices as offline if not found
     for (int i = 0; i < _devices.length; i++) {
@@ -128,26 +139,27 @@ class DeviceManager extends ChangeNotifier {
       }
     }
 
-    _isScanning = false;
-    notifyListeners();
     await _saveDevices();
     await NotificationService.notifyScanComplete(
         _devices.length, onlineCount);
 
-    // Port scan pass — run after device list is visible, in batches of 8
+    // Port scan pass — keep _isScanning true so concurrent scanNetwork is blocked
     final onlineIps = discovered.toList();
     const portBatch = 8;
     for (var i = 0; i < onlineIps.length; i += portBatch) {
       final batch = onlineIps.sublist(i, (i + portBatch).clamp(0, onlineIps.length));
       await Future.wait(batch.map((ip) async {
         final ports = await NetworkScanner.scanPorts(ip);
+        // Re-resolve by IP to avoid stale-index race condition
         final idx = _devices.indexWhere((d) => d.ip == ip);
         if (idx >= 0) {
           _devices[idx] = _devices[idx].copyWith(ports: ports);
-          notifyListeners();
         }
       }));
+      notifyListeners();
     }
+    _isScanning = false;
+    notifyListeners();
     await _saveDevices();
   }
 
@@ -214,18 +226,26 @@ class DeviceManager extends ChangeNotifier {
     }
     notifyListeners();
 
-    for (int i = 0; i < _devices.length; i++) {
-      final wasOnline = _devices[i].isOnline;
-      final updated = await NetworkScanner.checkDevice(_devices[i]);
-      final nowOnline = updated.isOnline;
-
-      if (wasOnline && !nowOnline) {
-        await NotificationService.notifyDeviceDown(updated);
-      } else if (!wasOnline && nowOnline) {
-        await NotificationService.notifyDeviceUp(updated);
-      }
-      _devices[i] = updated;
-      notifyListeners();
+    // Check devices in parallel batches of 8 to reduce total time
+    const batchSize = 8;
+    for (int i = 0; i < _devices.length; i += batchSize) {
+      final end = (i + batchSize).clamp(0, _devices.length);
+      final indices = List.generate(end - i, (j) => i + j);
+      await Future.wait(indices.map((idx) async {
+        final ip = _devices[idx].ip;
+        final wasOnline = _devices[idx].isOnline;
+        final updated = await NetworkScanner.checkDevice(_devices[idx]);
+        final nowOnline = updated.isOnline;
+        if (wasOnline && !nowOnline) {
+          await NotificationService.notifyDeviceDown(updated);
+        } else if (!wasOnline && nowOnline) {
+          await NotificationService.notifyDeviceUp(updated);
+        }
+        // Re-resolve by IP to avoid stale-index race after await
+        final idx2 = _devices.indexWhere((d) => d.ip == ip);
+        if (idx2 >= 0) _devices[idx2] = updated;
+      }));
+      notifyListeners(); // once per batch, not per device
     }
     await _saveDevices();
   }

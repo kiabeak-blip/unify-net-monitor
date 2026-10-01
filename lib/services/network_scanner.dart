@@ -278,8 +278,8 @@ class NetworkScanner {
     final total = endHost - startHost + 1;
     int scanned = 0;
 
-    // Scan in large batches — Windows ICMP ping is fast enough for 64 parallel
-    const batchSize = 64;
+    // Scan in batches — keep to 24 to avoid exhausting process handles
+    const batchSize = 24;
     for (int i = startHost; i <= endHost; i += batchSize) {
       final batchEnd = (i + batchSize - 1).clamp(startHost, endHost);
       final batch = List.generate(
@@ -331,8 +331,10 @@ class NetworkScanner {
     if (Platform.isAndroid || Platform.isIOS) return null;
     try {
       final result = Platform.isWindows
-          ? await Process.run('arp', ['-a', ip])
-          : await Process.run('arp', ['-n', ip]);
+          ? await Process.run('arp', ['-a', ip],
+              stdoutEncoding: const SystemEncoding())
+          : await Process.run('arp', ['-n', ip],
+              stdoutEncoding: const SystemEncoding());
       final output = result.stdout as String;
       final macRegex = RegExp(r'([0-9a-fA-F]{2}[-:]){5}[0-9a-fA-F]{2}');
       final match = macRegex.firstMatch(output);

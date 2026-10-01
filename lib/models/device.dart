@@ -149,7 +149,8 @@ class Device {
             : null,
         isManuallyAdded: json['isManuallyAdded'] ?? false,
         latencyHistory:
-            (json['latencyHistory'] as List<dynamic>?)?.cast<double>() ?? [],
+            (json['latencyHistory'] as List<dynamic>?)
+                ?.map((e) => (e as num).toDouble()).toList() ?? [],
         macAddress: json['macAddress'],
         hostname: json['hostname'],
         manufacturer: json['manufacturer'],

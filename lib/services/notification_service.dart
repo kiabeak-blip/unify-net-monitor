@@ -8,6 +8,17 @@ class NotificationService {
   static final _plugin = FlutterLocalNotificationsPlugin();
   static bool _initialized = false;
 
+  // Collision-free notification ID from last two octets + type offset (0=down, 1=up)
+  static int _notifId(String ip, int type) {
+    final parts = ip.split('.');
+    if (parts.length == 4) {
+      final c = int.tryParse(parts[2]) ?? 0;
+      final d = int.tryParse(parts[3]) ?? 0;
+      return c * 256 + d + type * 65536;
+    }
+    return ip.hashCode.abs() + type * 65536;
+  }
+
   /// Notifications are only supported on Android, iOS, and macOS.
   static bool get _supported =>
       Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
@@ -48,7 +59,7 @@ class NotificationService {
   static Future<void> notifyDeviceDown(Device device) async {
     if (!_supported || !_initialized) return;
     await _plugin.show(
-      device.ip.hashCode,
+      _notifId(device.ip, 0),
       '⚠️ Device Offline',
       '${device.name} (${device.ip}) is no longer reachable',
       _buildDetails(color: const Color(0xFFFF4444)),
@@ -58,7 +69,7 @@ class NotificationService {
   static Future<void> notifyDeviceUp(Device device) async {
     if (!_supported || !_initialized) return;
     await _plugin.show(
-      device.ip.hashCode + 10000,
+      _notifId(device.ip, 1),
       '✅ Device Back Online',
       '${device.name} (${device.ip}) is reachable again',
       _buildDetails(color: const Color(0xFF44FF88)),
