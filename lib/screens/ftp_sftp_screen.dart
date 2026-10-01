@@ -81,7 +81,7 @@ class _FtpSftpScreenState extends State<FtpSftpScreen>
   Future<void> _loadProfiles() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString('ftp_profiles');
-    if (raw != null) {
+    if (raw != null && mounted) {
       setState(() => _profiles =
           (jsonDecode(raw) as List).map((e) => _FtpProfile.fromJson(e)).toList());
     }

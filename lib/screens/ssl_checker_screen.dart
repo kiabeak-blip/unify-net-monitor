@@ -44,6 +44,7 @@ try {
 }
 ''']);
       final out = res.stdout.toString().trim();
+      if (!mounted) return;
       if (out.startsWith('ERROR=')) {
         setState(() { _error = out.substring(6); _loading = false; }); return;
       }
@@ -52,7 +53,7 @@ try {
         final idx = line.indexOf('=');
         if (idx > 0) map[line.substring(0, idx).trim()] = line.substring(idx + 1).trim();
       }
-      if (map.isEmpty) { setState(() { _error = 'Could not parse result'; _loading = false; }); return; }
+      if (map.isEmpty) { if (mounted) setState(() { _error = 'Could not parse result'; _loading = false; }); return; }
 
       final expiry = _parseDate(map['NotAfter'] ?? '');
       final now = DateTime.now();
@@ -76,6 +77,7 @@ try {
         _loading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() { _error = e.toString(); _loading = false; });
     }
   }

@@ -60,6 +60,7 @@ if (\$snmpwalk) {
 }
 ''']);
       final out = res.stdout.toString().trim();
+      if (!mounted) return;
       if (out.startsWith('ERROR=')) {
         setState(() { _error = out.substring(6); _loading = false; }); return;
       }
@@ -80,6 +81,7 @@ if (\$snmpwalk) {
         setState(() { _error = 'Unexpected output'; _loading = false; });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() { _error = e.toString(); _loading = false; });
     }
   }

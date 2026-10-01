@@ -40,11 +40,13 @@ class _DnsLookupScreenState extends State<DnsLookupScreen> {
 
     try {
       final result = await _LookupResult.fetch(query);
+      if (!mounted) return;
       setState(() => _result = result);
     } catch (e) {
+      if (!mounted) return;
       setState(() => _error = 'Lookup failed: $e');
     } finally {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 

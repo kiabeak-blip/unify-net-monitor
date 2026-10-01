@@ -26,11 +26,14 @@ class _State extends State<IpGeolocationScreen> {
       final body = await res.transform(utf8.decoder).join();
       final json = jsonDecode(body) as Map<String, dynamic>;
       if (json['status'] == 'fail') {
+        if (!mounted) return;
         setState(() { _error = json['message'] ?? 'Lookup failed'; _loading = false; });
         return;
       }
+      if (!mounted) return;
       setState(() { _data = json; _loading = false; });
     } catch (e) {
+      if (!mounted) return;
       setState(() { _error = e.toString(); _loading = false; });
     }
   }

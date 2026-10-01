@@ -26,11 +26,13 @@ class _WifiAnalyzerScreenState extends State<WifiAnalyzerScreen> {
     });
     try {
       final networks = await _parseNetworks();
+      if (!mounted) return;
       setState(() {
         _networks = networks;
         _loading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = e.toString();
         _loading = false;

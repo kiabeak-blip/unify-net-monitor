@@ -975,7 +975,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       setState(() { _phase = _Phase.installing; _uacTimeout = false; });
 
       // Minimize all windows so the UAC prompt is visible on top
-      Process.run('powershell', ['-NoProfile', '-Command',
+      await Process.run('powershell', ['-NoProfile', '-Command',
         '(New-Object -ComObject Shell.Application).MinimizeAll()'], runInShell: false);
 
       await UpdateService.runInstaller(path);

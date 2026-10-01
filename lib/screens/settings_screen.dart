@@ -110,7 +110,7 @@ class SettingsScreen extends StatelessWidget {
         ],
       ),
     );
-    if (confirmed == true) {
+    if (confirmed == true && context.mounted) {
       final ips =
           manager.devices.map((d) => d.ip).toList();
       for (final ip in ips) {

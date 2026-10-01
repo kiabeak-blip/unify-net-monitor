@@ -47,13 +47,15 @@ class _State extends State<HttpHeaderScreen> {
         final found = headers.any((h) => h.name.toLowerCase() == e.key);
         return _SecurityCheck(name: e.value.$1, description: e.value.$2, present: found, critical: e.value.$3);
       }).toList();
+      await res.drain<void>();
+      if (!mounted) return;
       setState(() {
         _headers = headers; _statusCode = res.statusCode;
         _statusMsg = _httpStatus(res.statusCode);
         _checks.addAll(checks); _loading = false;
       });
-      await res.drain<void>();
     } catch (e) {
+      if (!mounted) return;
       setState(() { _error = e.toString(); _loading = false; });
     }
   }

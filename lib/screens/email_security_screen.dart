@@ -53,6 +53,7 @@ Write-Output "BIMI=\$bimi"
 Write-Output "MTASTS=\$mtasts"
 ''']);
       final out = res.stdout.toString().trim();
+      if (!mounted) return;
       if (out.isEmpty) { setState(() { _error = 'No DNS data returned'; _loading = false; }); return; }
       final map = <String, String>{};
       for (final line in out.split('\n')) {
@@ -72,6 +73,7 @@ Write-Output "MTASTS=\$mtasts"
         _loading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() { _error = e.toString(); _loading = false; });
     }
   }

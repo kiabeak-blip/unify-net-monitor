@@ -62,12 +62,14 @@ try {
 }
 ''']);
       final out = res.stdout.toString().trim();
+      if (!mounted) return;
       if (out.isEmpty) {
         setState(() { _error = 'No result returned. Whois may not be installed.'; _loading = false; });
       } else {
         setState(() { _result = out; _loading = false; });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() { _error = e.toString(); _loading = false; });
     }
   }
