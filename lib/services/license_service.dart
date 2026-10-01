@@ -107,7 +107,7 @@ class LicenseService {
 
     // Verify signature
     final expected = _hmac('$_secret:$datePart');
-    if (!sigPart.startsWith(expected)) return null;
+    if (sigPart != expected) return null;
 
     // Parse expiry
     if (datePart == '99991231') {

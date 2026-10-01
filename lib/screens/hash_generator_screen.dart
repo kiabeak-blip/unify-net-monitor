@@ -13,6 +13,9 @@ class _State extends State<HashGeneratorScreen> {
   bool _isHex = false;
   Map<String, String> _hashes = {};
 
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
   void _compute() {
     final text = _ctrl.text;
     if (text.isEmpty) { setState(() => _hashes = {}); return; }

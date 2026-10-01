@@ -958,6 +958,13 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   bool _cancelRequested = false;
   bool _uacTimeout = false;
 
+  @override
+  void initState() {
+    super.initState();
+    // Auto-start download when dialog opens
+    WidgetsBinding.instance.addPostFrameCallback((_) => _download());
+  }
+
   Future<void> _download() async {
     _cancelRequested = false;
     _uacTimeout = false;

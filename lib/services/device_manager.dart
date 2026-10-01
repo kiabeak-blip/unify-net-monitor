@@ -168,7 +168,7 @@ class DeviceManager extends ChangeNotifier {
         manufacturer: newDevice.manufacturer ?? existing.manufacturer,
       );
       if (wasOffline && newDevice.isOnline) {
-        NotificationService.notifyDeviceUp(_devices[idx]);
+        unawaited(NotificationService.notifyDeviceUp(_devices[idx]));
       }
     } else {
       _devices.add(newDevice);

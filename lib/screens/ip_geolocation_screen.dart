@@ -14,6 +14,9 @@ class _State extends State<IpGeolocationScreen> {
   Map<String, dynamic>? _data;
   String? _error;
 
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
   Future<void> _lookup([String? ip]) async {
     final target = (ip ?? _ctrl.text.trim()).isEmpty ? '' : (ip ?? _ctrl.text.trim());
     setState(() { _loading = true; _error = null; _data = null; });

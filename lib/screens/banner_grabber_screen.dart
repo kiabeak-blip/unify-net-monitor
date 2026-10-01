@@ -16,6 +16,9 @@ class _State extends State<BannerGrabberScreen> {
   String? _banner, _error;
   List<_CommonPort> _results = [];
 
+  @override
+  void dispose() { _hostCtrl.dispose(); _portCtrl.dispose(); super.dispose(); }
+
   static const _commonPorts = [
     (21, 'FTP'), (22, 'SSH'), (23, 'Telnet'), (25, 'SMTP'),
     (80, 'HTTP'), (110, 'POP3'), (143, 'IMAP'), (443, 'HTTPS'),

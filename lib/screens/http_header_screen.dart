@@ -10,6 +10,9 @@ class HttpHeaderScreen extends StatefulWidget {
 class _State extends State<HttpHeaderScreen> {
   final _ctrl = TextEditingController(text: 'https://');
   bool _loading = false, _followRedirects = true;
+
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
   String? _error;
   List<_Header> _headers = [];
   int? _statusCode;

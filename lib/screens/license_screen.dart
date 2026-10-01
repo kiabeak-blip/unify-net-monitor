@@ -115,41 +115,47 @@ class _TrialBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Positioned(
-    bottom: 0, left: 0, right: 0,
-    child: Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      color: _color.withOpacity(0.10),
-      child: Row(children: [
-        Icon(Icons.timer_outlined, color: _color, size: 14),
-        const SizedBox(width: 7),
-        Text(
-          daysLeft == 1 ? 'Trial expires tomorrow!'
-              : '$daysLeft days remaining in trial',
-          style: TextStyle(color: _color, fontSize: 12,
-              fontWeight: FontWeight.w600)),
-        const Spacer(),
-        TextButton(
-          onPressed: onRequest,
-          style: TextButton.styleFrom(
-              foregroundColor: _color,
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-              minimumSize: Size.zero,
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-          child: const Text('Request License →',
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+    top: 0, left: 0, right: 0,
+    child: SafeArea(
+      bottom: false,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+        decoration: BoxDecoration(
+          color: _color.withOpacity(0.08),
+          border: Border(bottom: BorderSide(color: _color.withOpacity(0.18))),
         ),
-        const SizedBox(width: 4),
-        TextButton(
-          onPressed: onActivate,
-          style: TextButton.styleFrom(
-              foregroundColor: Colors.white38,
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-              minimumSize: Size.zero,
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-          child: const Text('Enter Key',
-              style: TextStyle(fontSize: 11)),
-        ),
-      ]),
+        child: Row(children: [
+          Icon(Icons.timer_outlined, color: _color, size: 13),
+          const SizedBox(width: 6),
+          Text(
+            daysLeft == 1 ? 'Trial expires tomorrow!'
+                : '$daysLeft days remaining in trial',
+            style: TextStyle(color: _color, fontSize: 11,
+                fontWeight: FontWeight.w600)),
+          const Spacer(),
+          TextButton(
+            onPressed: onRequest,
+            style: TextButton.styleFrom(
+                foregroundColor: _color,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+            child: const Text('Request License →',
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700)),
+          ),
+          const SizedBox(width: 4),
+          TextButton(
+            onPressed: onActivate,
+            style: TextButton.styleFrom(
+                foregroundColor: Colors.white38,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+            child: const Text('Enter Key',
+                style: TextStyle(fontSize: 10)),
+          ),
+        ]),
+      ),
     ),
   );
 }

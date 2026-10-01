@@ -13,6 +13,9 @@ class _State extends State<SslCheckerScreen> {
   _SslResult? _result;
   String? _error;
 
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
   Future<void> _check() async {
     var host = _ctrl.text.trim().replaceAll(RegExp(r'^https?://'), '').split('/').first;
     if (host.isEmpty) return;
@@ -26,7 +29,7 @@ try {
   \$sslStream = [System.Net.Security.SslStream]::new(\$tcpClient.GetStream(), \$false, { \$true })
   \$sslStream.AuthenticateAsClient(\$targetHost)
   \$cert = \$sslStream.RemoteCertificate
-  \$cert2 = [System.Security.Cryptography.X509Certificates.X509Certificate2]::\$cert
+  \$cert2 = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(\$cert)
   Write-Output "Subject=\$(\$cert.Subject)"
   Write-Output "Issuer=\$(\$cert.Issuer)"
   Write-Output "NotBefore=\$(\$cert.GetEffectiveDateString())"
