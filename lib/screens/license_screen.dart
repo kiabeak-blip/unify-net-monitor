@@ -23,6 +23,7 @@ class LicenseGate extends StatefulWidget {
 class _LicenseGateState extends State<LicenseGate> {
   LicenseInfo? _info;
   bool _loading = true;
+  bool _bannerDismissed = false;
 
   @override
   void initState() {
@@ -32,7 +33,7 @@ class _LicenseGateState extends State<LicenseGate> {
 
   Future<void> _check() async {
     final info = await LicenseService.check();
-    if (mounted) setState(() { _info = info; _loading = false; });
+    if (mounted) setState(() { _info = info; _loading = false; _bannerDismissed = false; });
   }
 
   @override
@@ -41,11 +42,12 @@ class _LicenseGateState extends State<LicenseGate> {
     if (_info!.canUse) {
       return Stack(children: [
         widget.child,
-        if (_info!.status == LicenseStatus.trial)
-          _TrialBanner(
+        if (_info!.status == LicenseStatus.trial && !_bannerDismissed)
+          _TrialPopup(
             daysLeft: _info!.trialDaysLeft,
             onActivate: () => _showActivation(context),
             onRequest: () => _showRequest(context),
+            onDismiss: () => setState(() => _bannerDismissed = true),
           ),
       ]);
     }
@@ -98,14 +100,15 @@ class _SplashScreen extends StatelessWidget {
 
 // ── Trial banner ──────────────────────────────────────────────────────────
 
-class _TrialBanner extends StatelessWidget {
-  const _TrialBanner({
+class _TrialPopup extends StatelessWidget {
+  const _TrialPopup({
     required this.daysLeft,
     required this.onActivate,
     required this.onRequest,
+    required this.onDismiss,
   });
   final int daysLeft;
-  final VoidCallback onActivate, onRequest;
+  final VoidCallback onActivate, onRequest, onDismiss;
 
   Color get _color => daysLeft > 14
       ? const Color(0xFF00D4FF)
@@ -115,46 +118,84 @@ class _TrialBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Positioned(
-    top: 0, left: 0, right: 0,
-    child: SafeArea(
-      bottom: false,
+    top: 16, right: 16,
+    child: Material(
+      color: Colors.transparent,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+        width: 280,
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: _color.withOpacity(0.08),
-          border: Border(bottom: BorderSide(color: _color.withOpacity(0.18))),
+          color: const Color(0xFF111827),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: _color.withOpacity(0.35)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.5),
+              blurRadius: 20,
+              offset: const Offset(0, 6),
+            ),
+          ],
         ),
-        child: Row(children: [
-          Icon(Icons.timer_outlined, color: _color, size: 13),
-          const SizedBox(width: 6),
-          Text(
-            daysLeft == 1 ? 'Trial expires tomorrow!'
-                : '$daysLeft days remaining in trial',
-            style: TextStyle(color: _color, fontSize: 11,
-                fontWeight: FontWeight.w600)),
-          const Spacer(),
-          TextButton(
-            onPressed: onRequest,
-            style: TextButton.styleFrom(
-                foregroundColor: _color,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                minimumSize: Size.zero,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-            child: const Text('Request License →',
-                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700)),
-          ),
-          const SizedBox(width: 4),
-          TextButton(
-            onPressed: onActivate,
-            style: TextButton.styleFrom(
-                foregroundColor: Colors.white38,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                minimumSize: Size.zero,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-            child: const Text('Enter Key',
-                style: TextStyle(fontSize: 10)),
-          ),
-        ]),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Icon(Icons.timer_outlined, color: _color, size: 16),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  daysLeft == 1 ? 'Trial expires tomorrow!'
+                      : '$daysLeft days remaining in trial',
+                  style: TextStyle(color: _color, fontSize: 13,
+                      fontWeight: FontWeight.w700)),
+              ),
+              GestureDetector(
+                onTap: onDismiss,
+                child: const Icon(Icons.close, color: Colors.white38, size: 16),
+              ),
+            ]),
+            const SizedBox(height: 8),
+            const Text(
+              'Activate a license key to unlock the full version.',
+              style: TextStyle(color: Colors.white54, fontSize: 11, height: 1.4),
+            ),
+            const SizedBox(height: 12),
+            Row(children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: onRequest,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: _color,
+                    side: BorderSide(color: _color.withOpacity(0.5)),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                    textStyle: const TextStyle(fontSize: 11,
+                        fontWeight: FontWeight.w700),
+                  ),
+                  child: const Text('Request License'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: onActivate,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _color,
+                    foregroundColor: const Color(0xFF0A0E1A),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                    textStyle: const TextStyle(fontSize: 11,
+                        fontWeight: FontWeight.w700),
+                  ),
+                  child: const Text('Enter Key'),
+                ),
+              ),
+            ]),
+          ],
+        ),
       ),
     ),
   );
