@@ -1100,21 +1100,10 @@ class _CameraCardState extends State<_CameraCard> {
 
           const SizedBox(height: 12),
 
-          // ── Open ports ──
+          // ── Port status (all scanned ports) ──
           Wrap(spacing: 6, runSpacing: 6, children: [
-            for (final port in cam.openPorts)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF3DD68C).withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(5),
-                  border: Border.all(
-                      color: const Color(0xFF3DD68C).withValues(alpha: 0.3)),
-                ),
-                child: Text(_portLabel(port),
-                    style: const TextStyle(color: Color(0xFF3DD68C),
-                        fontSize: 11, fontFamily: 'monospace')),
-              ),
+            for (final port in _allPorts)
+              _buildPortChip(port, cam.openPorts.contains(port)),
           ]),
 
           const SizedBox(height: 12),
@@ -1244,10 +1233,43 @@ String _portLabel(int port) {
     case 443:   return '443/HTTPS';
     case 8080:  return '8080/HTTP';
     case 8000:  return '8000/HTTP';
+    case 8888:  return '8888/HTTP';
     case 37777: return '37777/Dahua';
     case 34567: return '34567/DVR';
     default:    return '$port';
   }
+}
+
+Widget _buildPortChip(int port, bool open) {
+  const openColor = Color(0xFF3DD68C);
+  const closedColor = Color(0xFF6B7280);
+  final color = open ? openColor : closedColor;
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+    decoration: BoxDecoration(
+      color: color.withValues(alpha: open ? 0.12 : 0.06),
+      borderRadius: BorderRadius.circular(5),
+      border: Border.all(color: color.withValues(alpha: open ? 0.35 : 0.2)),
+    ),
+    child: Row(mainAxisSize: MainAxisSize.min, children: [
+      Container(
+        width: 6, height: 6,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: color.withValues(alpha: open ? 1.0 : 0.4),
+        ),
+      ),
+      const SizedBox(width: 5),
+      Text(
+        _portLabel(port),
+        style: TextStyle(
+          color: color.withValues(alpha: open ? 1.0 : 0.5),
+          fontSize: 11,
+          fontFamily: 'monospace',
+        ),
+      ),
+    ]),
+  );
 }
 
 // ─── URL row widget ───────────────────────────────────────────────────────
