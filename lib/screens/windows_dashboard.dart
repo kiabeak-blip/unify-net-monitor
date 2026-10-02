@@ -39,6 +39,7 @@ import 'snmp_browser_screen.dart';
 import 'netbios_scanner_screen.dart';
 import 'camera_scanner_screen.dart';
 import 'gateway_info_screen.dart';
+import 'device_detail_screen.dart';
 
 enum _NavItem {
   monitor('Monitor', Icons.monitor_heart),
@@ -769,7 +770,11 @@ class _DeviceRow extends StatelessWidget {
         ? '${device.manufacturer} (${device.ip.split('.').last})'
         : device.name;
 
-    return Padding(
+    return InkWell(
+      onTap: () => Navigator.push(context,
+          MaterialPageRoute(builder: (_) => DeviceDetailScreen(deviceIp: device.ip))),
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
       child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
         // Status dot
@@ -836,7 +841,7 @@ class _DeviceRow extends StatelessWidget {
             fontWeight: showLatency ? FontWeight.w600 : FontWeight.normal),
         )),
       ]),
-    );
+    ));
   }
 }
 
