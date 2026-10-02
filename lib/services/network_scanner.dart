@@ -47,6 +47,10 @@ const Map<String, String> _ouiDatabase = {
   '00:1C:F0': 'Amazon', '74:75:48': 'Amazon', 'FC:65:DE': 'Amazon',
   'A0:02:DC': 'Amazon', '44:65:0D': 'Amazon', '34:D2:70': 'Amazon',
   '00:04:20': 'Linksys', '00:06:25': 'Linksys', '00:0F:66': 'Linksys',
+  '00:22:6B': 'Linksys',
+  // More phones
+  '90:B7:90': 'Samsung', 'E8:50:8B': 'Samsung', '40:0E:85': 'Samsung',
+  'A0:82:1F': 'Samsung', '5C:E8:EB': 'Samsung', '8C:C8:CD': 'Samsung',
   // Lenovo
   '00:1E:65': 'Lenovo', '00:21:CC': 'Lenovo', '28:D2:44': 'Lenovo',
   '54:EE:75': 'Lenovo', '00:27:13': 'Lenovo', 'F8:16:54': 'Lenovo',
@@ -375,6 +379,7 @@ class NetworkScanner {
     final m = mfr.toLowerCase();
     // Apple — distinguish iPhone/iPad vs Mac by hostname hints if available,
     // but at manufacturer level just say "Apple Device"
+    if (m.contains('randomized')) return 'Phone / Laptop (randomized MAC)';
     if (m.contains('apple')) return 'Apple Device';
     if (m.contains('samsung')) return 'Samsung Device';
     if (m.contains('google')) return 'Google Device';
@@ -468,6 +473,9 @@ class NetworkScanner {
   /// OUI manufacturer lookup from first 3 MAC octets
   static String? lookupManufacturer(String? mac) {
     if (mac == null || mac.length < 8) return null;
+    // Locally-administered bit (bit 1 of first octet) = randomized/private MAC
+    final firstByte = int.tryParse(mac.substring(0, 2), radix: 16) ?? 0;
+    if (firstByte & 0x02 != 0) return 'Randomized MAC';
     final oui = mac.substring(0, 8).toUpperCase();
     return _ouiDatabase[oui];
   }
