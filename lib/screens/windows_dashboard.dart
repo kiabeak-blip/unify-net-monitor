@@ -38,6 +38,7 @@ import 'wake_on_lan_screen.dart';
 import 'snmp_browser_screen.dart';
 import 'netbios_scanner_screen.dart';
 import 'camera_scanner_screen.dart';
+import 'gateway_info_screen.dart';
 
 enum _NavItem {
   monitor('Monitor', Icons.monitor_heart),
@@ -72,7 +73,8 @@ enum _NavItem {
   wakeOnLan('Wake on LAN', Icons.power_settings_new),
   snmp('SNMP Browser', Icons.account_tree_outlined),
   netbios('NetBIOS Scanner', Icons.lan_outlined),
-  cameraScanner('Camera Scanner', Icons.videocam_outlined);
+  cameraScanner('Camera Scanner', Icons.videocam_outlined),
+  gatewayInfo('Gateway & Switch', Icons.router_outlined);
 
   const _NavItem(this.label, this.icon);
   final String label;
@@ -135,6 +137,7 @@ class _WindowsDashboardState extends State<WindowsDashboard> {
     _NavItem.snmp         => const SnmpBrowserScreen(),
     _NavItem.netbios        => const NetBiosScannerScreen(),
     _NavItem.cameraScanner  => const CameraScannerScreen(),
+    _NavItem.gatewayInfo    => const GatewayInfoScreen(),
   };
 
   @override
@@ -270,7 +273,8 @@ class _SidebarState extends State<_Sidebar> {
                 for (final item in [_NavItem.subnetCalc, _NavItem.ipGeo,
                   _NavItem.macVendor, _NavItem.hashGen, _NavItem.passwordGen,
                   _NavItem.bandwidth, _NavItem.connections, _NavItem.wakeOnLan,
-                  _NavItem.snmp, _NavItem.netbios, _NavItem.cameraScanner])
+                  _NavItem.snmp, _NavItem.netbios, _NavItem.cameraScanner,
+          _NavItem.gatewayInfo])
                   _NavTile(item: item, selected: widget.selected == item,
                       onTap: () => widget.onSelect(item)),
               ],

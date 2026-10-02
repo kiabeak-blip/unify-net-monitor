@@ -48,7 +48,9 @@ class _State extends State<NetBiosScannerScreen> {
 
   Future<void> _scanHost(String target) async {
     if (mounted) setState(() => _lastWasSingleHost = true);
-    final result = await _queryNbtstat(target);
+    var result = await _queryNbtstat(target);
+    // Fallback: DNS reverse lookup + ARP cache when NetBIOS gives nothing
+    result ??= await _queryFallback(target);
     if (mounted) setState(() => _results = result != null ? [result] : []);
   }
 
@@ -59,7 +61,8 @@ class _State extends State<NetBiosScannerScreen> {
     // If a full IP was entered (4 octets), treat as single-host — don't mutate _scanRange
     if (parts.length == 4 && int.tryParse(parts[3]) != null) {
       if (mounted) setState(() => _lastWasSingleHost = true);
-      final result = await _queryNbtstat(base);
+      var result = await _queryNbtstat(base);
+      result ??= await _queryFallback(base);
       if (mounted) setState(() => _results = result != null ? [result] : []);
       return;
     }
@@ -129,6 +132,40 @@ class _State extends State<NetBiosScannerScreen> {
       if (result.hostname.isEmpty && result.entries.isEmpty && result.mac.isEmpty) return null;
       return result;
     } catch (_) { return null; }
+  }
+
+  Future<_NetBiosResult?> _queryFallback(String ip) async {
+    String hostname = '';
+    String mac = '';
+
+    // DNS reverse lookup
+    try {
+      final res = await Process.run('nslookup', [ip], runInShell: false)
+          .timeout(const Duration(seconds: 3));
+      final out = res.stdout.toString();
+      for (final line in out.split('\n')) {
+        final l = line.trim().toLowerCase();
+        if (l.startsWith('name:')) {
+          hostname = line.trim().substring(5).trim();
+          break;
+        }
+      }
+    } catch (_) {}
+
+    // ARP cache lookup
+    try {
+      final res = await Process.run('arp', ['-a', ip], runInShell: false)
+          .timeout(const Duration(seconds: 2));
+      final out = res.stdout.toString();
+      final m = RegExp(r'([0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2})',
+          caseSensitive: false).firstMatch(out);
+      if (m != null) mac = m.group(1)!.toUpperCase().replaceAll('-', ':');
+    } catch (_) {}
+
+    if (hostname.isEmpty && mac.isEmpty) return null;
+    final source = hostname.isNotEmpty && mac.isNotEmpty ? 'DNS + ARP'
+        : hostname.isNotEmpty ? 'DNS' : 'ARP';
+    return _NetBiosResult(ip: ip, hostname: hostname, mac: mac, entries: [], source: source);
   }
 
   _NetBiosResult _parseNbtstat(String ip, List<String> lines) {
@@ -283,7 +320,26 @@ class _State extends State<NetBiosScannerScreen> {
                       const SizedBox(width: 8),
                       Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                         Text(r.hostname.isNotEmpty ? r.hostname : '(unknown)', style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
-                        Text(r.ip, style: const TextStyle(color: Colors.white38, fontFamily: 'monospace', fontSize: 11)),
+                        Row(children: [
+                          Text(r.ip, style: const TextStyle(color: Colors.white38, fontFamily: 'monospace', fontSize: 11)),
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: r.source == 'NetBIOS'
+                                  ? const Color(0xFF00D4FF).withValues(alpha: 0.12)
+                                  : const Color(0xFFFFAA00).withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(color: r.source == 'NetBIOS'
+                                  ? const Color(0xFF00D4FF).withValues(alpha: 0.3)
+                                  : const Color(0xFFFFAA00).withValues(alpha: 0.3)),
+                            ),
+                            child: Text(r.source,
+                              style: TextStyle(
+                                color: r.source == 'NetBIOS' ? const Color(0xFF00D4FF) : const Color(0xFFFFAA00),
+                                fontSize: 9, fontWeight: FontWeight.w600)),
+                          ),
+                        ]),
                       ]),
                       const Spacer(),
                       if (r.mac.isNotEmpty) ...[
@@ -326,7 +382,8 @@ class _State extends State<NetBiosScannerScreen> {
 class _NetBiosResult {
   final String ip, hostname, mac;
   final List<_NbtEntry> entries;
-  const _NetBiosResult({required this.ip, required this.hostname, required this.mac, required this.entries});
+  final String source; // 'NetBIOS', 'DNS', 'ARP'
+  const _NetBiosResult({required this.ip, required this.hostname, required this.mac, required this.entries, this.source = 'NetBIOS'});
 }
 
 class _NbtEntry {

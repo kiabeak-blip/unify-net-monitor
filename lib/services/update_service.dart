@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:path/path.dart' as p;
 
-const _currentVersion = '1.4.4';
+const _currentVersion = '1.4.5';
 const _githubRepo = 'kiabeak-blip/unify-net-monitor';
 const _releasesApiUrl =
     'https://api.github.com/repos/$_githubRepo/releases/latest';
