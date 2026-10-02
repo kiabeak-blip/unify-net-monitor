@@ -482,32 +482,155 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
 
   Future<CameraInfo?> _fetchCameraInfo(
       String ip, List<int> ports, String? brand) async {
+    CameraInfo? best;
+
+    // 1. RTSP OPTIONS Server header — no auth, fast
+    final rtspPort = ports.firstWhere(
+        (p) => _rtspPorts.contains(p), orElse: () => 0);
+    if (rtspPort != 0) {
+      best = _mergeInfo(best, await _fetchRtspInfo(ip, rtspPort));
+    }
+
     final httpPort = ports.firstWhere(
         (p) => _httpPorts.contains(p), orElse: () => 0);
+    if (httpPort == 0) return best;
     final scheme = httpPort == 443 ? 'https' : 'http';
 
-    // Try ONVIF GetDeviceInformation first (works on most brands)
-    if (httpPort != 0) {
-      final onvif = await _fetchOnvif(ip, httpPort, scheme);
-      if (onvif != null) return onvif;
+    // 2. HTTP root page title + meta — no auth
+    best = _mergeInfo(best, await _fetchPageInfo(ip, httpPort, scheme));
+
+    // 3. ONVIF without auth
+    best = _mergeInfo(best, await _fetchOnvif(ip, httpPort, scheme, null, null));
+    if (best != null && best.model != null) return best;
+
+    // 4. ONVIF with default credentials per brand
+    final b = best?.manufacturer ?? brand ?? '';
+    final profile = _brands[b];
+    if (profile != null) {
+      best = _mergeInfo(best,
+          await _fetchOnvif(ip, httpPort, scheme, profile.defaultUser, profile.defaultPass));
+    } else {
+      // Try common defaults
+      for (final cred in [('admin', '12345'), ('admin', 'admin'), ('admin', '')]) {
+        final r = await _fetchOnvif(ip, httpPort, scheme, cred.$1, cred.$2);
+        best = _mergeInfo(best, r);
+        if (best != null && best.model != null) break;
+      }
     }
 
-    // Try brand-specific endpoints
-    if (httpPort != 0) {
-      final b = brand ?? '';
-      if (b == 'Hikvision' || b.isEmpty) {
-        final hik = await _fetchHikvision(ip, httpPort, scheme);
-        if (hik != null) return hik;
-      }
-      if (b == 'Dahua' || b.isEmpty) {
-        final dah = await _fetchDahua(ip, httpPort, scheme);
-        if (dah != null) return dah;
+    // 5. Hikvision ISAPI (try without auth, then with admin/12345)
+    if (b == 'Hikvision' || b.isEmpty) {
+      best = _mergeInfo(best, await _fetchHikvision(ip, httpPort, scheme, null, null));
+      if (best?.model == null) {
+        best = _mergeInfo(best, await _fetchHikvision(ip, httpPort, scheme, 'admin', '12345'));
       }
     }
-    return null;
+
+    // 6. Dahua CGI (try without auth, then admin/admin)
+    if (b == 'Dahua' || b.isEmpty) {
+      best = _mergeInfo(best, await _fetchDahua(ip, httpPort, scheme, null, null));
+      if (best?.model == null) {
+        best = _mergeInfo(best, await _fetchDahua(ip, httpPort, scheme, 'admin', 'admin'));
+      }
+    }
+
+    return best;
   }
 
-  Future<CameraInfo?> _fetchOnvif(String ip, int port, String scheme) async {
+  // Merge two CameraInfo — prefer non-null fields from [newer]
+  CameraInfo? _mergeInfo(CameraInfo? base, CameraInfo? newer) {
+    if (newer == null) return base;
+    if (base == null) return newer;
+    return CameraInfo(
+      manufacturer:   newer.manufacturer   ?? base.manufacturer,
+      model:          newer.model          ?? base.model,
+      firmware:       newer.firmware       ?? base.firmware,
+      serial:         newer.serial         ?? base.serial,
+      deviceType:     newer.deviceType     ?? base.deviceType,
+      hardwareVersion: newer.hardwareVersion ?? base.hardwareVersion,
+      macFromDevice:  newer.macFromDevice  ?? base.macFromDevice,
+    );
+  }
+
+  // RTSP OPTIONS → parse Server header
+  Future<CameraInfo?> _fetchRtspInfo(String ip, int port) async {
+    try {
+      final sock = await Socket.connect(ip, port,
+          timeout: const Duration(milliseconds: 800));
+      sock.write('OPTIONS * RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: UnifyNetMonitor\r\n\r\n');
+      await sock.flush();
+      final buf = StringBuffer();
+      final done = Completer<void>();
+      late StreamSubscription sub;
+      sub = sock.listen((d) {
+        buf.write(String.fromCharCodes(d));
+        if (!done.isCompleted) done.complete();
+      }, onDone: () { if (!done.isCompleted) done.complete(); },
+         onError: (_) { if (!done.isCompleted) done.complete(); });
+      await done.future.timeout(const Duration(milliseconds: 800),
+          onTimeout: () {});
+      await sub.cancel();
+      await sock.close();
+      final resp = buf.toString();
+      final serverMatch = RegExp(r'Server:\s*(.+)', caseSensitive: false)
+          .firstMatch(resp);
+      if (serverMatch == null) return null;
+      final serverVal = serverMatch.group(1)!.trim();
+      // Extract brand from server string
+      String? mfr;
+      for (final entry in _brands.entries) {
+        for (final token in entry.value.serverTokens) {
+          if (serverVal.toLowerCase().contains(token)) {
+            mfr = entry.key; break;
+          }
+        }
+        if (mfr != null) break;
+      }
+      // Try to extract model — often "Brand-Model/version"
+      final modelMatch = RegExp(r'[\w\-]+/[\d.]+').firstMatch(serverVal);
+      return CameraInfo(
+        manufacturer: mfr,
+        model: modelMatch?.group(0)?.replaceAll(RegExp(r'/[\d.]+$'), ''),
+      );
+    } catch (_) { return null; }
+  }
+
+  // HTTP root page — parse <title> and meta for model info
+  Future<CameraInfo?> _fetchPageInfo(String ip, int port, String scheme) async {
+    try {
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 2)
+        ..badCertificateCallback = (_, __, ___) => true;
+      final req = await client.getUrl(Uri.parse('$scheme://$ip:$port/'));
+      req.headers.set('User-Agent', 'UnifyNetMonitor/1.4.1');
+      req.headers.set('Connection', 'close');
+      final res = await req.close().timeout(const Duration(seconds: 3));
+      final bodyBytes = <int>[];
+      await for (final chunk in res) {
+        bodyBytes.addAll(chunk);
+        if (bodyBytes.length >= 4096) break;
+      }
+      client.close();
+      final body = utf8.decode(bodyBytes, allowMalformed: true);
+      final titleMatch = RegExp(r'<title[^>]*>([^<]+)</title>', caseSensitive: false)
+          .firstMatch(body);
+      final title = titleMatch?.group(1)?.trim();
+      if (title == null || title.isEmpty) return null;
+      // Skip generic titles
+      const skip = ['index', 'login', 'welcome', 'home', 'web', 'camera', 'nvr', 'dvr'];
+      if (skip.any((s) => title.toLowerCase() == s)) return null;
+      String? mfr;
+      for (final entry in _brands.entries) {
+        if (title.toLowerCase().contains(entry.key.toLowerCase())) {
+          mfr = entry.key; break;
+        }
+      }
+      return CameraInfo(manufacturer: mfr, model: mfr == null ? title : null);
+    } catch (_) { return null; }
+  }
+
+  Future<CameraInfo?> _fetchOnvif(
+      String ip, int port, String scheme, String? user, String? pass) async {
     try {
       const soap =
           '<?xml version="1.0"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">'
@@ -521,33 +644,35 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
           .timeout(const Duration(seconds: 3));
       req.headers.set('Content-Type', 'application/soap+xml');
       req.headers.set('Connection', 'close');
+      if (user != null) {
+        final creds = base64Encode(utf8.encode('$user:${pass ?? ''}'));
+        req.headers.set('Authorization', 'Basic $creds');
+      }
       req.write(soap);
       final res = await req.close().timeout(const Duration(seconds: 4));
       final body = await res.transform(utf8.decoder).join()
           .timeout(const Duration(seconds: 3));
       client.close();
-
       if (!body.contains('Envelope')) return null;
 
-      String? _tag(String tag) {
-        final m = RegExp('<[^:>]*:?$tag[^>]*>([^<]+)<', caseSensitive: false)
-            .firstMatch(body);
-        return m?.group(1)?.trim();
-      }
+      String? xmlTag(String tag) => RegExp(
+              '<[^:>]*:?$tag[^>]*>([^<]+)<', caseSensitive: false)
+          .firstMatch(body)?.group(1)?.trim();
 
-      final mfr  = _tag('Manufacturer');
-      final model = _tag('Model');
-      final fw   = _tag('FirmwareVersion');
-      final sn   = _tag('SerialNumber');
-      final hw   = _tag('HardwareId');
+      final mfr = xmlTag('Manufacturer');
+      final model = xmlTag('Model');
       if (mfr == null && model == null) return null;
       return CameraInfo(
-          manufacturer: mfr, model: model, firmware: fw,
-          serial: sn, hardwareVersion: hw);
+        manufacturer: mfr, model: model,
+        firmware: xmlTag('FirmwareVersion'),
+        serial: xmlTag('SerialNumber'),
+        hardwareVersion: xmlTag('HardwareId'),
+      );
     } catch (_) { return null; }
   }
 
-  Future<CameraInfo?> _fetchHikvision(String ip, int port, String scheme) async {
+  Future<CameraInfo?> _fetchHikvision(
+      String ip, int port, String scheme, String? user, String? pass) async {
     try {
       final client = HttpClient()
         ..connectionTimeout = const Duration(seconds: 3)
@@ -556,65 +681,70 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
           .getUrl(Uri.parse('$scheme://$ip:$port/ISAPI/System/deviceInfo'))
           .timeout(const Duration(seconds: 3));
       req.headers.set('Connection', 'close');
+      if (user != null) {
+        final creds = base64Encode(utf8.encode('$user:${pass ?? ''}'));
+        req.headers.set('Authorization', 'Basic $creds');
+      }
       final res = await req.close().timeout(const Duration(seconds: 3));
       if (res.statusCode != 200) { await res.drain<void>(); client.close(); return null; }
       final body = await res.transform(utf8.decoder).join()
           .timeout(const Duration(seconds: 3));
       client.close();
 
-      String? _tag(String tag) {
-        final m = RegExp('<$tag>([^<]+)</$tag>', caseSensitive: false)
-            .firstMatch(body);
-        return m?.group(1)?.trim();
-      }
+      String? xmlTag(String tag) => RegExp('<$tag>([^<]+)</$tag>',
+              caseSensitive: false)
+          .firstMatch(body)?.group(1)?.trim();
 
       return CameraInfo(
         manufacturer: 'Hikvision',
-        model: _tag('model'),
-        firmware: _tag('firmwareVersion'),
-        serial: _tag('serialNumber'),
-        deviceType: _tag('deviceType'),
-        hardwareVersion: _tag('hardwareVersion'),
-        macFromDevice: _tag('macAddress'),
+        model: xmlTag('model'),
+        firmware: xmlTag('firmwareVersion'),
+        serial: xmlTag('serialNumber'),
+        deviceType: xmlTag('deviceType'),
+        hardwareVersion: xmlTag('hardwareVersion'),
+        macFromDevice: xmlTag('macAddress'),
       );
     } catch (_) { return null; }
   }
 
-  Future<CameraInfo?> _fetchDahua(String ip, int port, String scheme) async {
+  Future<CameraInfo?> _fetchDahua(
+      String ip, int port, String scheme, String? user, String? pass) async {
     try {
       final client = HttpClient()
         ..connectionTimeout = const Duration(seconds: 3)
         ..badCertificateCallback = (_, __, ___) => true;
 
-      Future<String> _cgi(String action) async {
+      Future<String> cgi(String action) async {
         final req = await client.getUrl(Uri.parse(
             '$scheme://$ip:$port/cgi-bin/magicBox.cgi?action=$action'));
         req.headers.set('Connection', 'close');
+        if (user != null) {
+          final creds = base64Encode(utf8.encode('$user:${pass ?? ''}'));
+          req.headers.set('Authorization', 'Basic $creds');
+        }
         final res = await req.close().timeout(const Duration(seconds: 3));
         if (res.statusCode != 200) { await res.drain<void>(); return ''; }
         return res.transform(utf8.decoder).join()
             .timeout(const Duration(seconds: 2));
       }
 
-      final typeBody = await _cgi('getDeviceType');
+      final typeBody = await cgi('getDeviceType');
       if (!typeBody.contains('DeviceType')) { client.close(); return null; }
 
-      final fwBody  = await _cgi('getSoftwareVersion');
-      final hwBody  = await _cgi('getHardwareVersion');
-      final snBody  = await _cgi('getSerialNo');
+      final fwBody = await cgi('getSoftwareVersion');
+      final hwBody = await cgi('getHardwareVersion');
+      final snBody = await cgi('getSerialNo');
       client.close();
 
-      String? _val(String body) {
-        final m = RegExp(r'=(.+)').firstMatch(body.trim());
-        return m?.group(1)?.trim();
-      }
+      String? val(String b) =>
+          RegExp(r'=(.+)').firstMatch(b.trim())?.group(1)?.trim();
 
       return CameraInfo(
         manufacturer: 'Dahua',
-        deviceType: _val(typeBody),
-        firmware: _val(fwBody),
-        hardwareVersion: _val(hwBody),
-        serial: _val(snBody),
+        deviceType: val(typeBody),
+        firmware: val(fwBody),
+        hardwareVersion: val(hwBody),
+        serial: val(snBody),
       );
     } catch (_) { return null; }
   }
