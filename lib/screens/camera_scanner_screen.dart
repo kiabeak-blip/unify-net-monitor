@@ -115,12 +115,38 @@ const _proprietaryPorts = {37777, 34567};
 // All ports to probe initially
 const _allPorts = [554, 8554, 37777, 34567, 8080, 8000, 8888, 80, 443];
 
+// ─── Camera info (fetched after verification) ─────────────────────────────
+class CameraInfo {
+  final String? manufacturer;
+  final String? model;
+  final String? firmware;
+  final String? serial;
+  final String? deviceType; // IPCamera, NVR, DVR…
+  final String? hardwareVersion;
+  final String? macFromDevice; // MAC reported by the device itself
+
+  const CameraInfo({
+    this.manufacturer,
+    this.model,
+    this.firmware,
+    this.serial,
+    this.deviceType,
+    this.hardwareVersion,
+    this.macFromDevice,
+  });
+
+  bool get hasAny =>
+      manufacturer != null || model != null || firmware != null ||
+      serial != null || deviceType != null;
+}
+
 class CameraDevice {
   final String ip;
   final String? mac;
   final String? brand;
   final List<int> openPorts;
-  final bool verified; // confirmed camera via banner/content check
+  final bool verified;
+  final CameraInfo? info;
 
   const CameraDevice({
     required this.ip,
@@ -128,6 +154,7 @@ class CameraDevice {
     required this.verified,
     this.mac,
     this.brand,
+    this.info,
   });
 
   String streamUrl() {
@@ -250,12 +277,15 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
       if (!verified.isCamera) continue; // skip non-cameras
       if (verified.brand != null) brand = verified.brand;
 
+      final info = await _fetchCameraInfo(ip, ports, brand);
+
       final device = CameraDevice(
         ip: ip,
         openPorts: ports,
         verified: true,
         mac: mac,
-        brand: brand,
+        brand: brand ?? info?.manufacturer,
+        info: info,
       );
 
       if (mounted) setState(() => _found = [..._found, device]);
@@ -446,6 +476,147 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
       client.close();
     } catch (_) {}
     return const _VerifyResult(isCamera: false);
+  }
+
+  // ── Fetch device info ────────────────────────────────────────────────────
+
+  Future<CameraInfo?> _fetchCameraInfo(
+      String ip, List<int> ports, String? brand) async {
+    final httpPort = ports.firstWhere(
+        (p) => _httpPorts.contains(p), orElse: () => 0);
+    final scheme = httpPort == 443 ? 'https' : 'http';
+
+    // Try ONVIF GetDeviceInformation first (works on most brands)
+    if (httpPort != 0) {
+      final onvif = await _fetchOnvif(ip, httpPort, scheme);
+      if (onvif != null) return onvif;
+    }
+
+    // Try brand-specific endpoints
+    if (httpPort != 0) {
+      final b = brand ?? '';
+      if (b == 'Hikvision' || b.isEmpty) {
+        final hik = await _fetchHikvision(ip, httpPort, scheme);
+        if (hik != null) return hik;
+      }
+      if (b == 'Dahua' || b.isEmpty) {
+        final dah = await _fetchDahua(ip, httpPort, scheme);
+        if (dah != null) return dah;
+      }
+    }
+    return null;
+  }
+
+  Future<CameraInfo?> _fetchOnvif(String ip, int port, String scheme) async {
+    try {
+      const soap =
+          '<?xml version="1.0"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">'
+          '<s:Body><tds:GetDeviceInformation xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>'
+          '</s:Body></s:Envelope>';
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 3)
+        ..badCertificateCallback = (_, __, ___) => true;
+      final req = await client
+          .postUrl(Uri.parse('$scheme://$ip:$port/onvif/device_service'))
+          .timeout(const Duration(seconds: 3));
+      req.headers.set('Content-Type', 'application/soap+xml');
+      req.headers.set('Connection', 'close');
+      req.write(soap);
+      final res = await req.close().timeout(const Duration(seconds: 4));
+      final body = await res.transform(utf8.decoder).join()
+          .timeout(const Duration(seconds: 3));
+      client.close();
+
+      if (!body.contains('Envelope')) return null;
+
+      String? _tag(String tag) {
+        final m = RegExp('<[^:>]*:?$tag[^>]*>([^<]+)<', caseSensitive: false)
+            .firstMatch(body);
+        return m?.group(1)?.trim();
+      }
+
+      final mfr  = _tag('Manufacturer');
+      final model = _tag('Model');
+      final fw   = _tag('FirmwareVersion');
+      final sn   = _tag('SerialNumber');
+      final hw   = _tag('HardwareId');
+      if (mfr == null && model == null) return null;
+      return CameraInfo(
+          manufacturer: mfr, model: model, firmware: fw,
+          serial: sn, hardwareVersion: hw);
+    } catch (_) { return null; }
+  }
+
+  Future<CameraInfo?> _fetchHikvision(String ip, int port, String scheme) async {
+    try {
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 3)
+        ..badCertificateCallback = (_, __, ___) => true;
+      final req = await client
+          .getUrl(Uri.parse('$scheme://$ip:$port/ISAPI/System/deviceInfo'))
+          .timeout(const Duration(seconds: 3));
+      req.headers.set('Connection', 'close');
+      final res = await req.close().timeout(const Duration(seconds: 3));
+      if (res.statusCode != 200) { await res.drain<void>(); client.close(); return null; }
+      final body = await res.transform(utf8.decoder).join()
+          .timeout(const Duration(seconds: 3));
+      client.close();
+
+      String? _tag(String tag) {
+        final m = RegExp('<$tag>([^<]+)</$tag>', caseSensitive: false)
+            .firstMatch(body);
+        return m?.group(1)?.trim();
+      }
+
+      return CameraInfo(
+        manufacturer: 'Hikvision',
+        model: _tag('model'),
+        firmware: _tag('firmwareVersion'),
+        serial: _tag('serialNumber'),
+        deviceType: _tag('deviceType'),
+        hardwareVersion: _tag('hardwareVersion'),
+        macFromDevice: _tag('macAddress'),
+      );
+    } catch (_) { return null; }
+  }
+
+  Future<CameraInfo?> _fetchDahua(String ip, int port, String scheme) async {
+    try {
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 3)
+        ..badCertificateCallback = (_, __, ___) => true;
+
+      Future<String> _cgi(String action) async {
+        final req = await client.getUrl(Uri.parse(
+            '$scheme://$ip:$port/cgi-bin/magicBox.cgi?action=$action'));
+        req.headers.set('Connection', 'close');
+        final res = await req.close().timeout(const Duration(seconds: 3));
+        if (res.statusCode != 200) { await res.drain<void>(); return ''; }
+        return res.transform(utf8.decoder).join()
+            .timeout(const Duration(seconds: 2));
+      }
+
+      final typeBody = await _cgi('getDeviceType');
+      if (!typeBody.contains('DeviceType')) { client.close(); return null; }
+
+      final fwBody  = await _cgi('getSoftwareVersion');
+      final hwBody  = await _cgi('getHardwareVersion');
+      final snBody  = await _cgi('getSerialNo');
+      client.close();
+
+      String? _val(String body) {
+        final m = RegExp(r'=(.+)').firstMatch(body.trim());
+        return m?.group(1)?.trim();
+      }
+
+      return CameraInfo(
+        manufacturer: 'Dahua',
+        deviceType: _val(typeBody),
+        firmware: _val(fwBody),
+        hardwareVersion: _val(hwBody),
+        serial: _val(snBody),
+      );
+    } catch (_) { return null; }
   }
 
   // ── MAC & brand ──────────────────────────────────────────────────────────
@@ -763,6 +934,40 @@ class _CameraCardState extends State<_CameraCard> {
               ),
           ]),
 
+          // ── Specs panel ──
+          if (cam.info != null && cam.info!.hasAny) ...[
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0D1321),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFF1E2D45)),
+              ),
+              child: Wrap(
+                spacing: 24,
+                runSpacing: 6,
+                children: [
+                  if (cam.info!.manufacturer != null)
+                    _specRow('Manufacturer', cam.info!.manufacturer!),
+                  if (cam.info!.model != null)
+                    _specRow('Model', cam.info!.model!),
+                  if (cam.info!.deviceType != null)
+                    _specRow('Type', cam.info!.deviceType!),
+                  if (cam.info!.firmware != null)
+                    _specRow('Firmware', cam.info!.firmware!),
+                  if (cam.info!.hardwareVersion != null)
+                    _specRow('Hardware', cam.info!.hardwareVersion!),
+                  if (cam.info!.serial != null)
+                    _specRow('Serial', cam.info!.serial!),
+                  if (cam.info!.macFromDevice != null)
+                    _specRow('MAC', cam.info!.macFromDevice!),
+                ],
+              ),
+            ),
+          ],
+
           const SizedBox(height: 12),
 
           // ── Open ports ──
@@ -869,6 +1074,19 @@ class _CameraCardState extends State<_CameraCard> {
       ),
     );
   }
+
+  Widget _specRow(String label, String value) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(label.toUpperCase(),
+          style: const TextStyle(color: Color(0xFF4A6480),
+              fontSize: 9, fontWeight: FontWeight.w600, letterSpacing: 0.08)),
+      const SizedBox(height: 2),
+      Text(value,
+          style: const TextStyle(color: Colors.white, fontSize: 12,
+              fontFamily: 'monospace')),
+    ],
+  );
 
   Widget _credRow(String label, String value) => Row(children: [
     SizedBox(
