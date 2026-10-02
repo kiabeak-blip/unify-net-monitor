@@ -224,8 +224,6 @@ class _SidebarState extends State<_Sidebar> {
     final now = widget.now;
     final timeStr =
         '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
-    final hasUpdate = _updateInfo?.hasUpdate == true;
-
     return SizedBox(
       width: 210,
       child: Container(
@@ -280,27 +278,6 @@ class _SidebarState extends State<_Sidebar> {
           ),
           // ── Fixed footer ──
           const Divider(height: 1, color: Color(0xFF1E2D45)),
-          // Update button (shown when update available)
-          if (hasUpdate)
-            InkWell(
-              onTap: () => _showUpdateDialog(context, _updateInfo!),
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                color: const Color(0xFF00D4FF).withOpacity(0.12),
-                child: Row(children: [
-                  const Icon(Icons.system_update_alt,
-                      color: Color(0xFF00D4FF), size: 13),
-                  const SizedBox(width: 6),
-                  Expanded(child: Text(
-                      'Update v${_updateInfo!.latestVersion} available',
-                      style: const TextStyle(
-                          color: Color(0xFF00D4FF), fontSize: 10,
-                          fontWeight: FontWeight.w600),
-                      overflow: TextOverflow.ellipsis)),
-                ]),
-              ),
-            ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: Row(children: [
@@ -318,13 +295,9 @@ class _SidebarState extends State<_Sidebar> {
               else
                 GestureDetector(
                   onTap: _checkUpdate,
-                  child: Tooltip(
+                  child: const Tooltip(
                     message: 'Check for updates',
-                    child: Icon(
-                      hasUpdate ? Icons.upgrade : Icons.refresh,
-                      color: hasUpdate
-                          ? const Color(0xFF00D4FF) : Colors.white24,
-                      size: 14),
+                    child: Icon(Icons.refresh, color: Colors.white24, size: 14),
                   ),
                 ),
               const SizedBox(width: 6),
