@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/device.dart';
 import '../services/device_manager.dart';
 import '../services/update_service.dart';
@@ -169,6 +170,9 @@ class _Sidebar extends StatefulWidget {
 class _SidebarState extends State<_Sidebar> {
   UpdateInfo? _updateInfo;
   bool _checking = false;
+  int _ignoreCount = 0;
+
+  static const _maxIgnores = 3; // after 3 dismissals, auto-install
 
   @override
   void initState() {
@@ -180,14 +184,38 @@ class _SidebarState extends State<_Sidebar> {
     if (_checking) return;
     setState(() => _checking = true);
     final info = await UpdateService.checkForUpdate();
-    if (mounted) setState(() { _updateInfo = info; _checking = false; });
+    if (!mounted) return;
+    setState(() { _updateInfo = info; _checking = false; });
+
+    if (info.hasUpdate) {
+      final prefs = await SharedPreferences.getInstance();
+      final key = 'update_ignored_${info.latestVersion}';
+      _ignoreCount = prefs.getInt(key) ?? 0;
+      if (!mounted) return;
+      // Auto-popup: show dialog immediately on launch
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _showUpdateDialog(context, info);
+      });
+    }
+  }
+
+  Future<void> _onIgnore(UpdateInfo info) async {
+    final prefs = await SharedPreferences.getInstance();
+    final key = 'update_ignored_${info.latestVersion}';
+    _ignoreCount = (_ignoreCount + 1);
+    await prefs.setInt(key, _ignoreCount);
   }
 
   void _showUpdateDialog(BuildContext context, UpdateInfo info) {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => _UpdateDialog(info: info),
+      builder: (_) => _UpdateDialog(
+        info: info,
+        ignoreCount: _ignoreCount,
+        maxIgnores: _maxIgnores,
+        onIgnore: () => _onIgnore(info),
+      ),
     );
   }
 
@@ -949,8 +977,16 @@ class _SshLauncherState extends State<_SshLauncher> {
 // ─── In-app Update Dialog ──────────────────────────────────────────────────
 
 class _UpdateDialog extends StatefulWidget {
-  const _UpdateDialog({required this.info});
+  const _UpdateDialog({
+    required this.info,
+    required this.ignoreCount,
+    required this.maxIgnores,
+    required this.onIgnore,
+  });
   final UpdateInfo info;
+  final int ignoreCount;
+  final int maxIgnores;
+  final VoidCallback onIgnore;
   @override State<_UpdateDialog> createState() => _UpdateDialogState();
 }
 
@@ -961,10 +997,12 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   bool _cancelRequested = false;
   bool _uacTimeout = false;
 
+  bool get _forceInstall => widget.ignoreCount >= widget.maxIgnores;
+
   @override
   void initState() {
     super.initState();
-    // Auto-start download when dialog opens
+    // Always auto-start download — no waiting for user click
     WidgetsBinding.instance.addPostFrameCallback((_) => _download());
   }
 
@@ -1001,6 +1039,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
 
   void _cancel() {
     _cancelRequested = true;
+    widget.onIgnore();
     if (mounted) Navigator.pop(context);
   }
 
@@ -1032,16 +1071,67 @@ class _UpdateDialogState extends State<_UpdateDialog> {
             if (_phase == _Phase.idle) ...[
               const Text('A new version of Unify Net Monitor is ready to install.',
                   style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.5)),
+              // Warning when close to forced install
+              if (!_forceInstall && widget.ignoreCount > 0) ...[
+                const SizedBox(height: 10),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF59E0B).withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.3)),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.warning_amber_rounded, color: Color(0xFFF59E0B), size: 14),
+                    const SizedBox(width: 6),
+                    Expanded(child: Text(
+                      'You\'ve skipped this ${widget.ignoreCount}x. '
+                      'After ${widget.maxIgnores - widget.ignoreCount} more skip(s), '
+                      'it will install automatically.',
+                      style: const TextStyle(color: Color(0xFFF59E0B), fontSize: 11),
+                    )),
+                  ]),
+                ),
+              ],
+              if (_forceInstall) ...[
+                const SizedBox(height: 10),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF87171).withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFF87171).withValues(alpha: 0.3)),
+                  ),
+                  child: const Row(children: [
+                    Icon(Icons.info_outline, color: Color(0xFFF87171), size: 14),
+                    SizedBox(width: 6),
+                    Expanded(child: Text(
+                      'Update is installing automatically — you\'ve skipped it too many times.',
+                      style: TextStyle(color: Color(0xFFF87171), fontSize: 11),
+                    )),
+                  ]),
+                ),
+              ],
               if (_error != null) ...[
                 const SizedBox(height: 10),
                 Container(padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(color: Colors.red.withOpacity(.1), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.red.withOpacity(.3))),
+                  decoration: BoxDecoration(color: Colors.red.withValues(alpha: .1), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.red.withValues(alpha: .3))),
                   child: Text(_error!, style: const TextStyle(color: Colors.redAccent, fontSize: 11))),
               ],
               const SizedBox(height: 20),
               Row(children: [
-                TextButton(onPressed: () => Navigator.pop(context),
-                    child: const Text('Later', style: TextStyle(color: Colors.white38))),
+                // Hide "Later" once max ignores reached
+                if (!_forceInstall)
+                  TextButton(
+                    onPressed: () {
+                      widget.onIgnore();
+                      Navigator.pop(context);
+                    },
+                    child: Text(
+                      widget.ignoreCount == 0 ? 'Later' : 'Skip again (${widget.maxIgnores - widget.ignoreCount} left)',
+                      style: const TextStyle(color: Colors.white38),
+                    ),
+                  ),
                 const Spacer(),
                 ElevatedButton.icon(
                   onPressed: _download,
