@@ -131,7 +131,10 @@ class GatewayInfoScreen extends StatefulWidget {
 
 class _GatewayInfoScreenState extends State<GatewayInfoScreen> {
   bool _loading = false;
+  bool _cancelled = false;
   String _status = '';
+  int _progress = 0;
+  int _total = 0;
   List<_GatewayDevice> _devices = [];
   String? _error;
 
@@ -141,9 +144,19 @@ class _GatewayInfoScreenState extends State<GatewayInfoScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _scan());
   }
 
+  void _cancel() => setState(() => _cancelled = true);
+
+  Future<bool> _pingHost(String ip) async {
+    try {
+      final res = await Process.run('ping', ['-n', '1', '-w', '600', ip], runInShell: false)
+          .timeout(const Duration(milliseconds: 900));
+      return res.exitCode == 0;
+    } catch (_) { return false; }
+  }
+
   Future<void> _scan() async {
     if (_loading) return;
-    setState(() { _loading = true; _error = null; _devices = []; _status = 'Detecting gateway...'; });
+    setState(() { _loading = true; _cancelled = false; _error = null; _devices = []; _status = 'Detecting gateway...'; _progress = 0; _total = 0; });
     try {
       final dm = context.read<DeviceManager>();
       final gatewayIp = dm.gateway;
@@ -157,23 +170,34 @@ class _GatewayInfoScreenState extends State<GatewayInfoScreen> {
       final gw = await _probeDevice(gatewayIp, _DeviceRole.gateway);
       if (mounted) setState(() => _devices = [gw]);
 
-      // Look for switches/APs at common IPs near the gateway
+      // Full subnet sweep for switches / APs (ping-first, then probe live hosts)
       final prefix = gatewayIp.substring(0, gatewayIp.lastIndexOf('.'));
-      final candidateLastOctets = <int>{};
-      // Common switch/AP addresses: .1, .2, .254, .253, .100, .200
-      for (final o in [1, 2, 254, 253, 100, 200]) candidateLastOctets.add(o);
-      // Also add gateway's last octet ±1
-      final gwLast = int.tryParse(gatewayIp.split('.').last) ?? 0;
-      for (final d in [-1, 1, 2]) {
-        final o = gwLast + d;
-        if (o > 0 && o < 255) candidateLastOctets.add(o);
-      }
-      candidateLastOctets.remove(gwLast); // skip gateway itself
+      final allIps = List.generate(254, (i) => '$prefix.${i + 1}')
+          .where((ip) => ip != gatewayIp).toList();
 
-      setState(() => _status = 'Scanning for switches / APs...');
-      final candidates = candidateLastOctets.map((o) => '$prefix.$o').toList();
-      final results = await Future.wait(candidates.map((ip) => _probeCandidate(ip)));
-      final found = results.whereType<_GatewayDevice>().toList();
+      setState(() { _status = 'Ping sweep — finding live hosts...'; _total = allIps.length; _progress = 0; });
+      final liveHosts = <String>[];
+      const pingBatch = 20;
+      for (var i = 0; i < allIps.length && !_cancelled; i += pingBatch) {
+        final batch = allIps.sublist(i, (i + pingBatch).clamp(0, allIps.length));
+        final pings = await Future.wait(batch.map(_pingHost));
+        for (var j = 0; j < batch.length; j++) {
+          if (pings[j]) liveHosts.add(batch[j]);
+        }
+        if (mounted) setState(() { _progress = i + batch.length; _status = 'Ping sweep — ${liveHosts.length} live hosts so far...'; });
+      }
+
+      if (_cancelled) { if (mounted) setState(() => _loading = false); return; }
+
+      setState(() => _status = 'Probing ${liveHosts.length} live hosts for management ports...');
+      const probeBatch = 10;
+      final found = <_GatewayDevice>[];
+      for (var i = 0; i < liveHosts.length && !_cancelled; i += probeBatch) {
+        final batch = liveHosts.sublist(i, (i + probeBatch).clamp(0, liveHosts.length));
+        final results = await Future.wait(batch.map((ip) => _probeCandidate(ip)));
+        for (final r in results) { if (r != null) found.add(r); }
+        if (mounted) setState(() { _devices = [gw, ...found]; _status = 'Probing hosts... (${i + batch.length}/${liveHosts.length})'; });
+      }
       if (mounted) setState(() { _devices = [gw, ...found]; _status = ''; });
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
@@ -209,17 +233,15 @@ class _GatewayInfoScreenState extends State<GatewayInfoScreen> {
       serverHeader = info.$2;
     }
 
-    // DNS hostname
     hostname = await _reverseDns(ip);
-
-    // Detect brand: OUI → HTTP tokens → hostname tokens
-    brand = _detectBrand(mac, pageTitle, serverHeader, hostname);
+    final macVendor = await _lookupMacVendor(mac);
+    brand = _detectBrand(mac, pageTitle, serverHeader, hostname, macVendor: macVendor);
     final profile = brand != null
         ? _brandProfiles.where((b) => b.name == brand).firstOrNull
         : null;
 
     return _GatewayDevice(
-      ip: ip, mac: mac, brand: brand, role: role, hostname: hostname,
+      ip: ip, mac: mac, brand: brand ?? macVendor, role: role, hostname: hostname,
       pageTitle: pageTitle, serverHeader: serverHeader,
       httpOpen: httpOpen, httpsOpen: httpsOpen, sshOpen: sshOpen,
       telnetOpen: telnetOpen, snmpOpen: snmpOpen, profile: profile,
@@ -254,7 +276,8 @@ class _GatewayInfoScreenState extends State<GatewayInfoScreen> {
       pageTitle = info.$1; serverHeader = info.$2;
     }
     hostname = await _reverseDns(ip);
-    brand = _detectBrand(mac, pageTitle, serverHeader, hostname);
+    final macVendor = await _lookupMacVendor(mac);
+    brand = _detectBrand(mac, pageTitle, serverHeader, hostname, macVendor: macVendor);
 
     // Classify role
     _DeviceRole role = _DeviceRole.unknown;
@@ -274,7 +297,7 @@ class _GatewayInfoScreenState extends State<GatewayInfoScreen> {
         : null;
 
     return _GatewayDevice(
-      ip: ip, mac: mac, brand: brand, role: role, hostname: hostname,
+      ip: ip, mac: mac, brand: brand ?? macVendor, role: role, hostname: hostname,
       pageTitle: pageTitle, serverHeader: serverHeader,
       httpOpen: httpOpen, httpsOpen: httpsOpen, sshOpen: sshOpen,
       telnetOpen: telnetOpen, snmpOpen: snmpOpen, profile: profile,
@@ -334,22 +357,40 @@ class _GatewayInfoScreenState extends State<GatewayInfoScreen> {
     return null;
   }
 
-  String? _detectBrand(String? mac, String? title, String? server, String? host) {
-    // 1. OUI lookup
+  String? _detectBrand(String? mac, String? title, String? server, String? host, {String? macVendor}) {
+    // 1. OUI lookup (local table)
     if (mac != null) {
       final oui = mac.replaceAll(':', '').substring(0, 6).toUpperCase();
       final fromOui = _ouiBrands[oui];
       if (fromOui != null) return fromOui;
     }
-    // 2. Token match in page title + server header + hostname
-    final combined = '${title ?? ''} ${server ?? ''} ${host ?? ''}'.toLowerCase();
+    // 2. Token match across all available strings including macvendors result
+    final combined = '${title ?? ''} ${server ?? ''} ${host ?? ''} ${macVendor ?? ''}'.toLowerCase();
     if (combined.isEmpty) return null;
     for (final p in _brandProfiles) {
       for (final t in p.tokens) {
         if (combined.contains(t)) return p.name;
       }
     }
+    // 3. Return raw macvendors result as brand if no profile match
+    if (macVendor != null && macVendor.isNotEmpty) return macVendor;
     return null;
+  }
+
+  Future<String?> _lookupMacVendor(String? mac) async {
+    if (mac == null) return null;
+    try {
+      final oui = mac.replaceAll(':', '').substring(0, 6);
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
+      final req = await client.getUrl(Uri.parse('https://api.macvendors.com/$oui'))
+          .timeout(const Duration(seconds: 5));
+      req.headers.set('User-Agent', 'UnifyNetMonitor/1.4');
+      final res = await req.close().timeout(const Duration(seconds: 5));
+      if (res.statusCode != 200) { await res.drain<void>(); client.close(); return null; }
+      final body = await res.transform(utf8.decoder).join();
+      client.close();
+      return body.trim().isNotEmpty ? body.trim() : null;
+    } catch (_) { return null; }
   }
 
   // ─── UI ───────────────────────────────────────────────────────────────────
@@ -382,10 +423,28 @@ class _GatewayInfoScreenState extends State<GatewayInfoScreen> {
 
           if (_loading) ...[
             Row(children: [
-              const SizedBox(width: 16, height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00D4FF))),
-              const SizedBox(width: 10),
-              Text(_status, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(_status, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+                const SizedBox(height: 6),
+                if (_total > 0) ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: _total > 0 ? _progress / _total : null,
+                    minHeight: 5, color: const Color(0xFF00D4FF),
+                    backgroundColor: const Color(0xFF1E2D45)),
+                ) else const LinearProgressIndicator(
+                    minHeight: 5, color: Color(0xFF00D4FF),
+                    backgroundColor: Color(0xFF1E2D45)),
+              ])),
+              const SizedBox(width: 12),
+              OutlinedButton.icon(
+                onPressed: _cancel,
+                icon: const Icon(Icons.stop, size: 14, color: Colors.redAccent),
+                label: const Text('Stop', style: TextStyle(color: Colors.redAccent, fontSize: 12)),
+                style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Colors.redAccent),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10)),
+              ),
             ]),
             const SizedBox(height: 12),
           ],
