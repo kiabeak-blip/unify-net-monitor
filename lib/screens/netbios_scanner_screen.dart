@@ -234,21 +234,39 @@ class _State extends State<NetBiosScannerScreen> {
           if (!_loading && _results.isEmpty && _error == null)
             Expanded(child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
               Icon(_scanned ? Icons.search_off : Icons.manage_search,
-                  size: 40, color: Colors.white12),
-              const SizedBox(height: 12),
+                  size: 48, color: _scanned ? Colors.white24 : Colors.white12),
+              const SizedBox(height: 16),
               Text(
                 _scanned
                   ? (_lastWasSingleHost
-                      ? 'No NetBIOS names found on this host'
+                      ? 'No NetBIOS response from ${_targetCtrl.text.trim()}'
                       : (_liveHosts == 0
-                          ? 'No NetBIOS names found on this subnet'
-                          : 'Found $_liveHosts live host${_liveHosts == 1 ? "" : "s"} but none had NetBIOS names'))
+                          ? 'No live hosts with NetBIOS found'
+                          : 'Found $_liveHosts live host${_liveHosts == 1 ? "" : "s"} — none had NetBIOS names'))
                   : 'Enter a host or subnet to scan',
-                style: const TextStyle(color: Colors.white24, fontSize: 13)),
+                style: TextStyle(
+                    color: _scanned ? Colors.white60 : Colors.white24,
+                    fontSize: 14, fontWeight: _scanned ? FontWeight.w500 : FontWeight.normal)),
               if (_scanned) ...[
-                const SizedBox(height: 8),
-                const Text('NetBIOS may be disabled (common on Windows 10/11)',
-                  style: TextStyle(color: Colors.white12, fontSize: 11)),
+                const SizedBox(height: 10),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1A2035),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFF2A3F5F)),
+                  ),
+                  child: Column(children: [
+                    const Text('Common reasons NetBIOS is unavailable:',
+                        style: TextStyle(color: Colors.white38, fontSize: 11, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 6),
+                    const Text('• NetBIOS disabled on Windows 10/11 (common default)\n'
+                        '• Device is not a Windows PC (Linux, Mac, camera, router)\n'
+                        '• Firewall blocking UDP port 137\n'
+                        '• Device is offline or unreachable',
+                        style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.6)),
+                  ]),
+                ),
               ],
             ])))
           else
@@ -290,7 +308,7 @@ class _State extends State<NetBiosScannerScreen> {
                           Expanded(child: Text(_codeDesc(e.code), style: const TextStyle(color: Colors.white38, fontSize: 10))),
                           Container(padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
                             decoration: BoxDecoration(
-                              color: e.status.toLowerCase() == 'registered' ? const Color(0xFF00FF88).withOpacity(.1) : const Color(0xFF1A2035),
+                              color: e.status.toLowerCase() == 'registered' ? const Color(0xFF00FF88).withValues(alpha: .1) : const Color(0xFF1A2035),
                               borderRadius: BorderRadius.circular(4)),
                             child: Text(e.status, style: TextStyle(color: e.status.toLowerCase() == 'registered' ? const Color(0xFF00FF88) : Colors.white38, fontSize: 9))),
                         ]))),
