@@ -6,49 +6,159 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../services/device_manager.dart';
 
-// Common IP camera ports
-const _cameraPorts = [554, 8554, 8080, 8000, 8888, 37777, 34567, 80, 443, 2020];
+// ─── Camera brand profiles ────────────────────────────────────────────────
+class _BrandProfile {
+  final String name;
+  final String defaultUser;
+  final String defaultPass;
+  final List<String> rtspPaths;
+  final List<String> httpPaths; // paths that return 200/401 on real cameras
+  final List<String> serverTokens; // HTTP Server header substrings
 
-// OUI prefix → brand name (first 6 hex chars of MAC, uppercase no colons)
-const _ouiBrands = {
-  'ACDCAA': 'Hikvision', 'D074DF': 'Hikvision', '000000': 'Hikvision',
+  const _BrandProfile({
+    required this.name,
+    required this.defaultUser,
+    required this.defaultPass,
+    required this.rtspPaths,
+    required this.httpPaths,
+    required this.serverTokens,
+  });
+}
+
+const _brands = <String, _BrandProfile>{
+  'Hikvision': _BrandProfile(
+    name: 'Hikvision',
+    defaultUser: 'admin',
+    defaultPass: '12345',
+    rtspPaths: ['/Streaming/Channels/101', '/h264/ch1/main/av_stream'],
+    httpPaths: ['/ISAPI/System/deviceInfo', '/doc/page/login.asp'],
+    serverTokens: ['hikvision', 'webs'],
+  ),
+  'Dahua': _BrandProfile(
+    name: 'Dahua',
+    defaultUser: 'admin',
+    defaultPass: 'admin',
+    rtspPaths: ['/cam/realmonitor?channel=1&subtype=0', '/h264Preview_01_main'],
+    httpPaths: ['/cgi-bin/magicBox.cgi?action=getDeviceType', '/RPC2_Login'],
+    serverTokens: ['dahua', 'dh-'],
+  ),
+  'Axis': _BrandProfile(
+    name: 'Axis',
+    defaultUser: 'root',
+    defaultPass: 'pass',
+    rtspPaths: ['/axis-media/media.amp', '/mpeg4/media.amp'],
+    httpPaths: ['/axis-cgi/param.cgi', '/view/view.shtml'],
+    serverTokens: ['axis', 'boa'],
+  ),
+  'Reolink': _BrandProfile(
+    name: 'Reolink',
+    defaultUser: 'admin',
+    defaultPass: '',
+    rtspPaths: ['/h264Preview_01_main', '/stream1'],
+    httpPaths: ['/cgi-bin/api.cgi', '/'],
+    serverTokens: ['reolink'],
+  ),
+  'Amcrest': _BrandProfile(
+    name: 'Amcrest',
+    defaultUser: 'admin',
+    defaultPass: 'admin',
+    rtspPaths: ['/cam/realmonitor?channel=1&subtype=0'],
+    httpPaths: ['/cgi-bin/snapshot.cgi', '/'],
+    serverTokens: ['amcrest'],
+  ),
+  'Foscam': _BrandProfile(
+    name: 'Foscam',
+    defaultUser: 'admin',
+    defaultPass: '',
+    rtspPaths: ['/videoMain', '/video.mp4'],
+    httpPaths: ['/cgi-bin/CGIProxy.fcgi', '/'],
+    serverTokens: ['foscam', 'ipc-webs'],
+  ),
+  'Uniview': _BrandProfile(
+    name: 'Uniview',
+    defaultUser: 'admin',
+    defaultPass: '123456',
+    rtspPaths: ['/unicast/c1/s0/live', '/media/video1'],
+    httpPaths: ['/LAPI/V1.0/System/DeviceBasicInfo', '/'],
+    serverTokens: ['uniview', 'nsc'],
+  ),
+  'Bosch': _BrandProfile(
+    name: 'Bosch',
+    defaultUser: 'service',
+    defaultPass: '',
+    rtspPaths: ['/rtsp_tunnel', '/video.mp4'],
+    httpPaths: ['/rcp.xml', '/'],
+    serverTokens: ['bosch', 'rtspchn'],
+  ),
+};
+
+// OUI prefix → brand key
+const _ouiBrands = <String, String>{
+  'ACDCAA': 'Hikvision', 'D074DF': 'Hikvision', 'C01678': 'Hikvision',
+  '8C968A': 'Hikvision', '8CF5A3': 'Hikvision', '4C11AE': 'Hikvision',
   'D46A35': 'Dahua',     '3C1B86': 'Dahua',     '705A9E': 'Dahua',
-  '00E091': 'Axis',      '00408C': 'Axis',
+  'E0CC7A': 'Dahua',     '00083A': 'Dahua',
+  '00E091': 'Axis',      '00408C': 'Axis',       'ACCC8E': 'Axis',
   'B4A2EB': 'Reolink',   '6C29B5': 'Reolink',
-  'E0CC7A': 'Amcrest',   'D466CE': 'Amcrest',
+  'D80404': 'Hanwha',    '001C54': 'Hanwha',
   '00408F': 'Bosch',
-  'D80404': 'Hanwha',
+  'D480BE': 'Foscam',    '00157D': 'Foscam',
 };
 
-// Port → default RTSP path
-const _rtspPaths = {
-  554:   '/stream1',
-  8554:  '/stream1',
-  8080:  '/video.mjpg',
-  37777: '/cam/realmonitor?channel=1&subtype=0',
-  34567: '/h264Preview_01_main',
-};
+// Ports that carry RTSP vs HTTP
+const _rtspPorts = {554, 8554};
+const _httpPorts = {80, 8080, 8000, 8888, 443};
+// Proprietary DVR/NVR ports — strong indicator of camera device
+const _proprietaryPorts = {37777, 34567};
+
+// All ports to probe initially
+const _allPorts = [554, 8554, 37777, 34567, 8080, 8000, 8888, 80, 443];
 
 class CameraDevice {
   final String ip;
-  final List<int> openPorts;
-  final String? brand;
   final String? mac;
+  final String? brand;
+  final List<int> openPorts;
+  final bool verified; // confirmed camera via banner/content check
 
   const CameraDevice({
     required this.ip,
     required this.openPorts,
-    this.brand,
+    required this.verified,
     this.mac,
+    this.brand,
   });
 
-  String rtspUrl() {
-    final port = openPorts.firstWhere(
-        (p) => _rtspPaths.containsKey(p), orElse: () => openPorts.first);
-    final path = _rtspPaths[port] ?? '/stream1';
-    return 'rtsp://<user>:<pass>@$ip:$port$path';
+  String streamUrl() {
+    // Prefer RTSP ports
+    final rtsp = openPorts.where((p) => _rtspPorts.contains(p)).toList();
+    if (rtsp.isNotEmpty) {
+      final port = rtsp.first;
+      final profile = brand != null ? _brands[brand] : null;
+      final path = profile?.rtspPaths.first ?? '/stream1';
+      final u = profile?.defaultUser ?? 'admin';
+      final p = profile?.defaultPass ?? '';
+      return 'rtsp://$u:$p@$ip:$port$path';
+    }
+    // HTTP ports → MJPEG/snapshot URL
+    final http = openPorts.where((p) => _httpPorts.contains(p)).toList();
+    if (http.isNotEmpty) {
+      final port = http.first;
+      final scheme = port == 443 ? 'https' : 'http';
+      return '$scheme://$ip:$port/';
+    }
+    return 'rtsp://$ip:${openPorts.first}/';
+  }
+
+  String get defaultCredentials {
+    final p = brand != null ? _brands[brand] : null;
+    if (p == null) return 'admin / admin';
+    final pass = p.defaultPass.isEmpty ? '(blank)' : p.defaultPass;
+    return '${p.defaultUser} / $pass';
   }
 }
+
+// ─── Main screen ──────────────────────────────────────────────────────────
 
 class CameraScannerScreen extends StatefulWidget {
   const CameraScannerScreen({super.key});
@@ -62,13 +172,13 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
   bool _scanning = false;
   int _progress = 0;
   int _total = 254;
+  String _status = '';
   List<CameraDevice> _found = [];
   String? _error;
 
   @override
   void initState() {
     super.initState();
-    // Pre-fill subnet from DeviceManager
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final subnet = context.read<DeviceManager>().subnet;
@@ -85,13 +195,12 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
   }
 
   Future<void> _scan() async {
-    final subnet = _subnetCtrl.text.trim();
-    if (subnet.isEmpty) {
+    final raw = _subnetCtrl.text.trim();
+    if (raw.isEmpty) {
       setState(() => _error = 'Enter a subnet prefix (e.g. 192.168.1)');
       return;
     }
-    // Normalise: strip trailing dot/zero
-    final base = subnet.replaceAll(RegExp(r'\.$'), '').replaceAll(RegExp(r'\.0$'), '');
+    final base = raw.replaceAll(RegExp(r'\.$'), '').replaceAll(RegExp(r'\.0$'), '');
     if (base.split('.').length != 3) {
       setState(() => _error = 'Use a /24 prefix like 192.168.1');
       return;
@@ -103,40 +212,67 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
       _total = 254;
       _found = [];
       _error = null;
+      _status = 'Scanning for open camera ports…';
     });
 
-    final results = <CameraDevice>[];
+    // Phase 1: port probe in batches of 20
+    const batchSize = 20;
+    final candidates = <String, List<int>>{}; // ip → open ports
 
-    // Scan in batches of 16 to avoid socket exhaustion
-    const batchSize = 16;
     for (var i = 1; i <= 254 && _scanning; i += batchSize) {
       final end = (i + batchSize - 1).clamp(1, 254);
       final ips = List.generate(end - i + 1, (j) => '$base.${i + j}');
 
       await Future.wait(ips.map((ip) async {
-        final openPorts = await _checkCameraPorts(ip);
-        if (openPorts.isNotEmpty) {
-          final mac = await _getMac(ip);
-          final brand = _guessBrand(mac);
-          results.add(CameraDevice(ip: ip, openPorts: openPorts, brand: brand, mac: mac));
-          if (mounted) setState(() => _found = List.from(results));
-        }
+        final open = await _probePorts(ip);
+        if (open.isNotEmpty) candidates[ip] = open;
       }));
 
       if (mounted) setState(() => _progress = end);
     }
 
-    if (mounted) setState(() => _scanning = false);
+    if (!_scanning) { if (mounted) setState(() => _scanning = false); return; }
+
+    // Phase 2: verify candidates are actually cameras
+    if (mounted) setState(() => _status = 'Verifying ${candidates.length} candidate(s)…');
+
+    for (final entry in candidates.entries) {
+      if (!_scanning) break;
+      final ip = entry.key;
+      final ports = entry.value;
+
+      final mac = await _getMac(ip);
+      String? brand = _guessBrandFromMac(mac);
+
+      // Try to confirm it's a camera and identify brand
+      final verified = await _verifyCamera(ip, ports);
+      if (!verified.isCamera) continue; // skip non-cameras
+      if (verified.brand != null) brand = verified.brand;
+
+      final device = CameraDevice(
+        ip: ip,
+        openPorts: ports,
+        verified: true,
+        mac: mac,
+        brand: brand,
+      );
+
+      if (mounted) setState(() => _found = [..._found, device]);
+    }
+
+    if (mounted) setState(() { _scanning = false; _status = ''; });
   }
 
-  void _stop() => setState(() => _scanning = false);
+  void _stop() => setState(() { _scanning = false; _status = ''; });
 
-  Future<List<int>> _checkCameraPorts(String ip) async {
+  // ── Port probe ───────────────────────────────────────────────────────────
+
+  Future<List<int>> _probePorts(String ip) async {
     final open = <int>[];
-    await Future.wait(_cameraPorts.map((port) async {
+    await Future.wait(_allPorts.map((port) async {
       try {
         final sock = await Socket.connect(ip, port,
-            timeout: const Duration(milliseconds: 400));
+            timeout: const Duration(milliseconds: 500));
         await sock.close();
         open.add(port);
       } catch (_) {}
@@ -144,30 +280,138 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
     return open;
   }
 
+  // ── Camera verification ──────────────────────────────────────────────────
+
+  Future<_VerifyResult> _verifyCamera(String ip, List<int> ports) async {
+    // Proprietary DVR/NVR ports are very strong indicators
+    if (ports.any((p) => _proprietaryPorts.contains(p))) {
+      return const _VerifyResult(isCamera: true);
+    }
+
+    // Check RTSP ports — send OPTIONS and look for RTSP/1.0 response
+    for (final port in ports.where((p) => _rtspPorts.contains(p))) {
+      final r = await _checkRtsp(ip, port);
+      if (r.isCamera) return r;
+    }
+
+    // Check HTTP ports — inspect headers and known camera paths
+    for (final port in ports.where((p) => _httpPorts.contains(p))) {
+      final r = await _checkHttp(ip, port);
+      if (r.isCamera) return r;
+    }
+
+    return const _VerifyResult(isCamera: false);
+  }
+
+  Future<_VerifyResult> _checkRtsp(String ip, int port) async {
+    try {
+      final sock = await Socket.connect(ip, port,
+          timeout: const Duration(milliseconds: 800));
+      sock.write('OPTIONS * RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: UnifyNetMonitor\r\n\r\n');
+      await sock.flush();
+
+      final completer = Completer<String>();
+      final buf = StringBuffer();
+      late StreamSubscription sub;
+      sub = sock.listen(
+        (data) {
+          buf.write(String.fromCharCodes(data));
+          if (!completer.isCompleted) completer.complete(buf.toString());
+        },
+        onDone: () { if (!completer.isCompleted) completer.complete(buf.toString()); },
+        onError: (_) { if (!completer.isCompleted) completer.complete(''); },
+      );
+
+      final response = await completer.future.timeout(
+          const Duration(milliseconds: 1000), onTimeout: () => buf.toString());
+      await sub.cancel();
+      await sock.close();
+
+      if (response.startsWith('RTSP/1.0')) return const _VerifyResult(isCamera: true);
+    } catch (_) {}
+    return const _VerifyResult(isCamera: false);
+  }
+
+  Future<_VerifyResult> _checkHttp(String ip, int port) async {
+    try {
+      final scheme = port == 443 ? 'https' : 'http';
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 2)
+        ..badCertificateCallback = (_, __, ___) => true;
+
+      // 1. Check root path headers
+      final req = await client.getUrl(Uri.parse('$scheme://$ip:$port/'));
+      req.headers.set('User-Agent', 'UnifyNetMonitor/1.3.6');
+      req.headers.set('Connection', 'close');
+      final res = await req.close().timeout(const Duration(seconds: 3));
+      final server = (res.headers.value('server') ?? '').toLowerCase();
+      await res.drain<void>();
+
+      // Match server header against known camera tokens
+      for (final entry in _brands.entries) {
+        for (final token in entry.value.serverTokens) {
+          if (server.contains(token)) {
+            return _VerifyResult(isCamera: true, brand: entry.key);
+          }
+        }
+      }
+
+      // 2. Try ONVIF device service path — only real cameras respond
+      final onvifReq = await client
+          .getUrl(Uri.parse('$scheme://$ip:$port/onvif/device_service'))
+          .timeout(const Duration(seconds: 2));
+      onvifReq.headers.set('Connection', 'close');
+      final onvifRes = await onvifReq.close().timeout(const Duration(seconds: 2));
+      final onvifStatus = onvifRes.statusCode;
+      await onvifRes.drain<void>();
+      if (onvifStatus == 200 || onvifStatus == 400 || onvifStatus == 401) {
+        // ONVIF endpoint responded — it's a camera
+        return const _VerifyResult(isCamera: true);
+      }
+
+      // 3. Try Hikvision ISAPI path
+      final hikReq = await client
+          .getUrl(Uri.parse('$scheme://$ip:$port/ISAPI/System/deviceInfo'))
+          .timeout(const Duration(seconds: 2));
+      hikReq.headers.set('Connection', 'close');
+      final hikRes = await hikReq.close().timeout(const Duration(seconds: 2));
+      if (hikRes.statusCode == 401 || hikRes.statusCode == 200) {
+        await hikRes.drain<void>();
+        return const _VerifyResult(isCamera: true, brand: 'Hikvision');
+      }
+      await hikRes.drain<void>();
+
+      client.close();
+    } catch (_) {}
+    return const _VerifyResult(isCamera: false);
+  }
+
+  // ── MAC & brand ──────────────────────────────────────────────────────────
+
   Future<String?> _getMac(String ip) async {
     try {
-      // Ping first to populate ARP cache
       await Process.run('ping', ['-n', '1', '-w', '200', ip]);
       final res = await Process.run('arp', ['-a', ip],
           stdoutEncoding: const SystemEncoding());
-      final lines = res.stdout.toString().split('\n');
-      for (final line in lines) {
+      for (final line in res.stdout.toString().split('\n')) {
         if (line.contains(ip)) {
-          final match = RegExp(r'([0-9a-f]{2}[:-]){5}[0-9a-f]{2}',
+          final m = RegExp(r'([0-9a-f]{2}[:\-]){5}[0-9a-f]{2}',
               caseSensitive: false).firstMatch(line);
-          if (match != null) return match.group(0);
+          if (m != null) return m.group(0);
         }
       }
     } catch (_) {}
     return null;
   }
 
-  String? _guessBrand(String? mac) {
+  String? _guessBrandFromMac(String? mac) {
     if (mac == null) return null;
     final oui = mac.replaceAll(RegExp(r'[:\-]'), '').toUpperCase();
     if (oui.length >= 6) return _ouiBrands[oui.substring(0, 6)];
     return null;
   }
+
+  // ─── Build ───────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -178,13 +422,14 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
         progress: _progress,
         total: _total,
         found: _found.length,
+        status: _status,
         onScan: _scan,
         onStop: _stop,
         error: _error,
       ),
       Expanded(
         child: _found.isEmpty
-            ? _EmptyState(scanning: _scanning, progress: _progress, total: _total)
+            ? _EmptyState(scanning: _scanning, progress: _progress, total: _total, status: _status)
             : ListView.builder(
                 padding: const EdgeInsets.all(16),
                 itemCount: _found.length,
@@ -195,7 +440,15 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
   }
 }
 
-// ─── Header ────────────────────────────────────────────────────────────────
+// ─── Verify result ────────────────────────────────────────────────────────
+
+class _VerifyResult {
+  final bool isCamera;
+  final String? brand;
+  const _VerifyResult({required this.isCamera, this.brand});
+}
+
+// ─── Header ───────────────────────────────────────────────────────────────
 
 class _Header extends StatelessWidget {
   const _Header({
@@ -204,6 +457,7 @@ class _Header extends StatelessWidget {
     required this.progress,
     required this.total,
     required this.found,
+    required this.status,
     required this.onScan,
     required this.onStop,
     required this.error,
@@ -212,6 +466,7 @@ class _Header extends StatelessWidget {
   final TextEditingController subnetCtrl;
   final bool scanning;
   final int progress, total, found;
+  final String status;
   final VoidCallback onScan, onStop;
   final String? error;
 
@@ -229,6 +484,9 @@ class _Header extends StatelessWidget {
           const Text('Camera Scanner',
               style: TextStyle(color: Colors.white, fontSize: 16,
                   fontWeight: FontWeight.w600)),
+          const SizedBox(width: 8),
+          const Text('— verified cameras only',
+              style: TextStyle(color: Color(0xFF4A6480), fontSize: 12)),
           const Spacer(),
           if (found > 0)
             Container(
@@ -236,7 +494,8 @@ class _Header extends StatelessWidget {
               decoration: BoxDecoration(
                 color: const Color(0xFF00D4FF).withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFF00D4FF).withValues(alpha: 0.3)),
+                border: Border.all(
+                    color: const Color(0xFF00D4FF).withValues(alpha: 0.3)),
               ),
               child: Text('$found found',
                   style: const TextStyle(
@@ -255,7 +514,8 @@ class _Header extends StatelessWidget {
                 hintText: '192.168.1',
                 hintStyle: const TextStyle(color: Color(0xFF4A6480)),
                 labelText: 'Subnet prefix (/24)',
-                labelStyle: const TextStyle(color: Color(0xFF7A96B8), fontSize: 12),
+                labelStyle:
+                    const TextStyle(color: Color(0xFF7A96B8), fontSize: 12),
                 prefixIcon: const Icon(Icons.lan_outlined,
                     color: Color(0xFF4A6480), size: 17),
                 filled: true,
@@ -295,7 +555,8 @@ class _Header extends StatelessWidget {
                     style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF00D4FF),
                         foregroundColor: Colors.black,
-                        padding: const EdgeInsets.symmetric(horizontal: 18)),
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: 18)),
                   ),
           ),
         ]),
@@ -306,7 +567,7 @@ class _Header extends StatelessWidget {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(4),
                 child: LinearProgressIndicator(
-                  value: total > 0 ? progress / total : 0,
+                  value: total > 0 ? progress / total : null,
                   backgroundColor: const Color(0xFF1E2D45),
                   color: const Color(0xFF00D4FF),
                   minHeight: 4,
@@ -315,23 +576,31 @@ class _Header extends StatelessWidget {
             ),
             const SizedBox(width: 10),
             Text('$progress / $total',
-                style: const TextStyle(
-                    color: Color(0xFF7A96B8), fontSize: 11,
-                    fontVariations: [FontVariation('wght', 500)])),
+                style: const TextStyle(color: Color(0xFF7A96B8), fontSize: 11)),
           ]),
+          if (status.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(status,
+                style: const TextStyle(color: Color(0xFF4A6480), fontSize: 11)),
+          ],
         ],
       ]),
     );
   }
 }
 
-// ─── Empty state ───────────────────────────────────────────────────────────
+// ─── Empty state ──────────────────────────────────────────────────────────
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState(
-      {required this.scanning, required this.progress, required this.total});
+  const _EmptyState({
+    required this.scanning,
+    required this.progress,
+    required this.total,
+    required this.status,
+  });
   final bool scanning;
   final int progress, total;
+  final String status;
 
   @override
   Widget build(BuildContext context) {
@@ -345,40 +614,58 @@ class _EmptyState extends StatelessWidget {
         const SizedBox(height: 14),
         Text(
           scanning
-              ? 'Scanning for IP cameras…'
-              : 'Enter a subnet and press Scan',
+              ? (status.isNotEmpty ? status : 'Scanning for IP cameras…')
+              : 'Enter a subnet prefix and press Scan',
           style: const TextStyle(color: Color(0xFF4A6480), fontSize: 14),
         ),
-        if (scanning) ...[
+        if (scanning && status.isEmpty) ...[
           const SizedBox(height: 6),
           Text('$progress of $total hosts checked',
               style: const TextStyle(color: Color(0xFF2A3F5F), fontSize: 12)),
+        ],
+        if (!scanning) ...[
+          const SizedBox(height: 8),
+          const Text(
+            'Only confirmed IP cameras are shown.\nPCs and routers with open ports are filtered out.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Color(0xFF2A3F5F), fontSize: 12),
+          ),
         ],
       ]),
     );
   }
 }
 
-// ─── Camera card ───────────────────────────────────────────────────────────
+// ─── Camera card ──────────────────────────────────────────────────────────
 
-class _CameraCard extends StatelessWidget {
+class _CameraCard extends StatefulWidget {
   const _CameraCard({required this.camera});
   final CameraDevice camera;
 
   @override
+  State<_CameraCard> createState() => _CameraCardState();
+}
+
+class _CameraCardState extends State<_CameraCard> {
+  bool _showCreds = false;
+
+  @override
   Widget build(BuildContext context) {
-    final rtsp = camera.rtspUrl();
+    final cam = widget.camera;
+    final url = cam.streamUrl();
+    final profile = cam.brand != null ? _brands[cam.brand] : null;
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 10),
+      margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: const Color(0xFF111927),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: const Color(0xFF1E2D45)),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          // ── Title row ──
           Row(children: [
             Container(
               padding: const EdgeInsets.all(8),
@@ -386,105 +673,225 @@ class _CameraCard extends StatelessWidget {
                 color: const Color(0xFF00D4FF).withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Icon(Icons.videocam,
-                  color: Color(0xFF00D4FF), size: 20),
+              child: const Icon(Icons.videocam, color: Color(0xFF00D4FF), size: 20),
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                Text(camera.brand ?? 'IP Camera',
-                    style: const TextStyle(
-                        color: Colors.white, fontWeight: FontWeight.w600,
-                        fontSize: 14)),
-                Text(camera.ip,
-                    style: const TextStyle(
-                        color: Color(0xFF7A96B8), fontSize: 12,
-                        fontFamily: 'monospace')),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(cam.brand ?? 'IP Camera',
+                    style: const TextStyle(color: Colors.white,
+                        fontWeight: FontWeight.w600, fontSize: 14)),
+                Row(children: [
+                  Text(cam.ip,
+                      style: const TextStyle(color: Color(0xFF7A96B8),
+                          fontSize: 12, fontFamily: 'monospace')),
+                ]),
               ]),
             ),
-            if (camera.mac != null)
+            if (cam.mac != null)
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                   color: const Color(0xFF1E2D45),
                   borderRadius: BorderRadius.circular(5),
                 ),
-                child: Text(camera.mac!,
-                    style: const TextStyle(
-                        color: Color(0xFF4A6480), fontSize: 10,
-                        fontFamily: 'monospace')),
+                child: Text(cam.mac!,
+                    style: const TextStyle(color: Color(0xFF4A6480),
+                        fontSize: 10, fontFamily: 'monospace')),
               ),
           ]),
-          const SizedBox(height: 10),
-          // Open ports
+
+          const SizedBox(height: 12),
+
+          // ── Open ports ──
           Wrap(spacing: 6, runSpacing: 6, children: [
-            for (final port in camera.openPorts)
+            for (final port in cam.openPorts)
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                   color: const Color(0xFF3DD68C).withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(5),
-                  border:
-                      Border.all(color: const Color(0xFF3DD68C).withValues(alpha: 0.3)),
+                  border: Border.all(
+                      color: const Color(0xFF3DD68C).withValues(alpha: 0.3)),
                 ),
-                child: Text(
-                  port == 554 || port == 8554
-                      ? '$port/RTSP'
-                      : port == 80
-                          ? '$port/HTTP'
-                          : port == 443
-                              ? '$port/HTTPS'
-                              : '$port',
-                  style: const TextStyle(
-                      color: Color(0xFF3DD68C), fontSize: 11,
-                      fontFamily: 'monospace'),
-                ),
+                child: Text(_portLabel(port),
+                    style: const TextStyle(color: Color(0xFF3DD68C),
+                        fontSize: 11, fontFamily: 'monospace')),
               ),
           ]),
-          const SizedBox(height: 10),
-          // RTSP URL row
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            decoration: BoxDecoration(
-              color: const Color(0xFF0D1321),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: const Color(0xFF1E2D45)),
-            ),
-            child: Row(children: [
-              const Icon(Icons.link, color: Color(0xFF4A6480), size: 13),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(rtsp,
-                    style: const TextStyle(
-                        color: Color(0xFF7A96B8), fontSize: 11,
-                        fontFamily: 'monospace'),
-                    overflow: TextOverflow.ellipsis),
-              ),
-              const SizedBox(width: 6),
-              InkWell(
-                borderRadius: BorderRadius.circular(4),
-                onTap: () {
-                  Clipboard.setData(ClipboardData(text: rtsp));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('RTSP URL copied to clipboard'),
-                      duration: Duration(seconds: 2),
-                      backgroundColor: Color(0xFF111927),
-                    ),
-                  );
-                },
-                child: const Padding(
-                  padding: EdgeInsets.all(4),
-                  child: Icon(Icons.copy, color: Color(0xFF4A6480), size: 13),
-                ),
-              ),
-            ]),
+
+          const SizedBox(height: 12),
+
+          // ── Stream URL ──
+          _UrlRow(
+            label: _rtspPorts.contains(cam.openPorts.firstWhere(
+                    (p) => _rtspPorts.contains(p),
+                    orElse: () => 0))
+                ? 'RTSP'
+                : 'HTTP',
+            url: url,
           ),
+
+          // ── Additional RTSP paths for known brands ──
+          if (profile != null && profile.rtspPaths.length > 1) ...[
+            const SizedBox(height: 6),
+            for (final path in profile.rtspPaths.skip(1))
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: _UrlRow(label: 'alt', url: _buildRtsp(cam, path, profile)),
+              ),
+          ],
+
+          const SizedBox(height: 10),
+
+          // ── Default credentials toggle ──
+          InkWell(
+            borderRadius: BorderRadius.circular(6),
+            onTap: () => setState(() => _showCreds = !_showCreds),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0D1321),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: const Color(0xFF1E2D45)),
+              ),
+              child: Row(children: [
+                const Icon(Icons.key, color: Color(0xFF4A6480), size: 13),
+                const SizedBox(width: 6),
+                const Text('Default credentials',
+                    style: TextStyle(color: Color(0xFF7A96B8), fontSize: 12)),
+                const Spacer(),
+                Icon(_showCreds ? Icons.expand_less : Icons.expand_more,
+                    color: const Color(0xFF4A6480), size: 16),
+              ]),
+            ),
+          ),
+
+          if (_showCreds) ...[
+            const SizedBox(height: 6),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0D1321),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                    color: const Color(0xFFF59E0B).withValues(alpha: 0.3)),
+              ),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                _credRow('Username', profile?.defaultUser ?? 'admin'),
+                const SizedBox(height: 4),
+                _credRow('Password',
+                    profile?.defaultPass.isEmpty ?? true
+                        ? '(blank)'
+                        : profile!.defaultPass),
+                if (profile != null && profile.httpPaths.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  const Text('Web interface paths:',
+                      style: TextStyle(color: Color(0xFF4A6480), fontSize: 11)),
+                  const SizedBox(height: 4),
+                  for (final path in profile.httpPaths)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 2),
+                      child: Text('http://${cam.ip}$path',
+                          style: const TextStyle(
+                              color: Color(0xFF7A96B8), fontSize: 11,
+                              fontFamily: 'monospace')),
+                    ),
+                ],
+              ]),
+            ),
+          ],
         ]),
       ),
+    );
+  }
+
+  Widget _credRow(String label, String value) => Row(children: [
+    SizedBox(
+      width: 72,
+      child: Text(label,
+          style: const TextStyle(color: Color(0xFF4A6480), fontSize: 12)),
+    ),
+    Text(value,
+        style: const TextStyle(color: Color(0xFFF59E0B), fontSize: 12,
+            fontFamily: 'monospace', fontWeight: FontWeight.w600)),
+  ]);
+
+  String _buildRtsp(CameraDevice cam, String path, _BrandProfile p) {
+    final port = cam.openPorts.firstWhere(
+        (pt) => _rtspPorts.contains(pt), orElse: () => 554);
+    return 'rtsp://${p.defaultUser}:${p.defaultPass}@${cam.ip}:$port$path';
+  }
+}
+
+String _portLabel(int port) {
+  switch (port) {
+    case 554:   return '554/RTSP';
+    case 8554:  return '8554/RTSP';
+    case 80:    return '80/HTTP';
+    case 443:   return '443/HTTPS';
+    case 8080:  return '8080/HTTP';
+    case 8000:  return '8000/HTTP';
+    case 37777: return '37777/Dahua';
+    case 34567: return '34567/DVR';
+    default:    return '$port';
+  }
+}
+
+// ─── URL row widget ───────────────────────────────────────────────────────
+
+class _UrlRow extends StatelessWidget {
+  const _UrlRow({required this.label, required this.url});
+  final String label;
+  final String url;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0D1321),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: const Color(0xFF1E2D45)),
+      ),
+      child: Row(children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E2D45),
+            borderRadius: BorderRadius.circular(3),
+          ),
+          child: Text(label,
+              style: const TextStyle(color: Color(0xFF4A6480),
+                  fontSize: 9, fontWeight: FontWeight.w700,
+                  letterSpacing: 0.5)),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(url,
+              style: const TextStyle(color: Color(0xFF7A96B8),
+                  fontSize: 11, fontFamily: 'monospace'),
+              overflow: TextOverflow.ellipsis),
+        ),
+        const SizedBox(width: 6),
+        InkWell(
+          borderRadius: BorderRadius.circular(4),
+          onTap: () {
+            Clipboard.setData(ClipboardData(text: url));
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Copied to clipboard'),
+              duration: Duration(seconds: 2),
+              backgroundColor: Color(0xFF111927),
+            ));
+          },
+          child: const Padding(
+            padding: EdgeInsets.all(4),
+            child: Icon(Icons.copy, color: Color(0xFF4A6480), size: 13),
+          ),
+        ),
+      ]),
     );
   }
 }
