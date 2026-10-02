@@ -47,6 +47,39 @@ const Map<String, String> _ouiDatabase = {
   '00:1C:F0': 'Amazon', '74:75:48': 'Amazon', 'FC:65:DE': 'Amazon',
   'A0:02:DC': 'Amazon', '44:65:0D': 'Amazon', '34:D2:70': 'Amazon',
   '00:04:20': 'Linksys', '00:06:25': 'Linksys', '00:0F:66': 'Linksys',
+  // Lenovo
+  '00:1E:65': 'Lenovo', '00:21:CC': 'Lenovo', '28:D2:44': 'Lenovo',
+  '54:EE:75': 'Lenovo', '00:27:13': 'Lenovo', 'F8:16:54': 'Lenovo',
+  '60:6C:66': 'Lenovo',
+  // Realtek / Liteon (common in laptops)
+  'DC:9F:DB': 'Realtek', 'B8:AE:ED': 'Realtek',
+  'D0:17:C2': 'Realtek', '40:B0:76': 'Realtek', '54:04:A6': 'Realtek',
+  // TP-Link additional
+  '08:2E:5F': 'TP-Link', 'A0:F3:C1': 'TP-Link', '18:A6:F7': 'TP-Link',
+  '98:48:27': 'TP-Link', '90:9A:4A': 'TP-Link', '10:FE:ED': 'TP-Link',
+  // Ubiquiti additional
+  '80:2A:A8': 'Ubiquiti', '78:8A:20': 'Ubiquiti', '24:A4:3C': 'Ubiquiti',
+  'B4:FB:E4': 'Ubiquiti', 'F0:9F:C2': 'Ubiquiti',
+  // Intel NIC additional
+  '8C:EC:4B': 'Intel', '00:1B:21': 'Intel', 'A0:36:9F': 'Intel',
+  // OnePlus / OPPO
+  'DC:4A:3E': 'OnePlus', '04:18:D6': 'OnePlus',
+  // Aruba (HP networking)
+  '00:0B:86': 'Aruba', '94:B4:0F': 'Aruba', 'D8:C7:C8': 'Aruba',
+  // Fortinet
+  '00:09:0F': 'Fortinet', '70:4C:A5': 'Fortinet', '90:6C:AC': 'Fortinet',
+  // Synology NAS
+  '00:11:32': 'Synology', 'BC:5F:F4': 'Synology',
+  // QNAP NAS
+  '00:08:9B': 'QNAP', '24:5E:BE': 'QNAP',
+  // Hikvision
+  'C0:56:E3': 'Hikvision', 'BC:AD:28': 'Hikvision', '44:19:B6': 'Hikvision',
+  // Dahua
+  '90:02:A9': 'Dahua', '4C:11:BF': 'Dahua',
+  // Printer brands
+  '00:00:48': 'Epson', '00:26:AB': 'Epson',
+  '00:80:77': 'Brother', 'E4:B3:18': 'Brother',
+  '00:80:91': 'Canon', '04:72:95': 'Canon',
 };
 
 class NetworkScanner {
@@ -368,6 +401,18 @@ class NetworkScanner {
     if (m.contains('mikrotik')) return 'MikroTik Router';
     if (m.contains('linksys')) return 'Linksys Router';
     if (m.contains('belkin')) return 'Belkin Router';
+    if (m.contains('lenovo') || m.contains('thinkpad')) return 'Lenovo PC';
+    if (m.contains('oneplus') || m.contains('oppo') || m.contains('realme')) return 'Android Phone';
+    if (m.contains('realtek') || m.contains('liteon')) return 'PC / Laptop';
+    if (m.contains('aruba')) return 'Aruba AP / Switch';
+    if (m.contains('fortinet')) return 'Fortinet Firewall';
+    if (m.contains('synology')) return 'Synology NAS';
+    if (m.contains('qnap')) return 'QNAP NAS';
+    if (m.contains('hikvision')) return 'Hikvision Camera';
+    if (m.contains('dahua')) return 'Dahua Camera';
+    if (m.contains('epson')) return 'Epson Printer';
+    if (m.contains('brother')) return 'Brother Printer';
+    if (m.contains('canon')) return 'Canon Printer';
     return mfr; // fallback: show raw manufacturer name
   }
 

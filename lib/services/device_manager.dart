@@ -163,13 +163,24 @@ class DeviceManager extends ChangeNotifier {
     await _saveDevices();
   }
 
+  // Returns true if a device name was auto-generated (not user-set)
+  static bool _isAutoName(String name) {
+    return RegExp(r'^Device \d+$').hasMatch(name) ||
+        RegExp(r'^Unknown \(\d+\)$').hasMatch(name) ||
+        name == 'Gateway/Router' ||
+        name == 'Gateway / Router';
+  }
+
   void _upsertDevice(Device newDevice) {
     final idx = _devices.indexWhere((d) => d.ip == newDevice.ip);
     if (idx >= 0) {
       final existing = _devices[idx];
       final wasOffline = !existing.isOnline &&
           existing.status != DeviceStatus.unknown;
+      // Auto-update name if it was a generated placeholder and new scan has better info
+      final updatedName = _isAutoName(existing.name) ? newDevice.name : existing.name;
       _devices[idx] = existing.copyWith(
+        name: updatedName,
         status: newDevice.status,
         latencyMs: newDevice.latencyMs,
         lastSeen: newDevice.lastSeen,
