@@ -1,5 +1,6 @@
 // lib/screens/camera_scanner_screen.dart
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -339,15 +340,22 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
         ..connectionTimeout = const Duration(seconds: 2)
         ..badCertificateCallback = (_, __, ___) => true;
 
-      // 1. Check root path headers
+      // 1. Check root path — Server header + first 2KB of body
       final req = await client.getUrl(Uri.parse('$scheme://$ip:$port/'));
-      req.headers.set('User-Agent', 'UnifyNetMonitor/1.3.6');
+      req.headers.set('User-Agent', 'UnifyNetMonitor/1.3.9');
       req.headers.set('Connection', 'close');
       final res = await req.close().timeout(const Duration(seconds: 3));
       final server = (res.headers.value('server') ?? '').toLowerCase();
-      await res.drain<void>();
 
-      // Match server header against known camera tokens
+      // Read up to 2KB of body to look for camera keywords
+      final bodyBytes = <int>[];
+      await for (final chunk in res) {
+        bodyBytes.addAll(chunk);
+        if (bodyBytes.length >= 2048) break;
+      }
+      final body = utf8.decode(bodyBytes, allowMalformed: true).toLowerCase();
+
+      // Server header match — most reliable
       for (final entry in _brands.entries) {
         for (final token in entry.value.serverTokens) {
           if (server.contains(token)) {
@@ -356,30 +364,84 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
         }
       }
 
-      // 2. Try ONVIF device service path — only real cameras respond
-      final onvifReq = await client
-          .getUrl(Uri.parse('$scheme://$ip:$port/onvif/device_service'))
-          .timeout(const Duration(seconds: 2));
-      onvifReq.headers.set('Connection', 'close');
-      final onvifRes = await onvifReq.close().timeout(const Duration(seconds: 2));
-      final onvifStatus = onvifRes.statusCode;
-      await onvifRes.drain<void>();
-      if (onvifStatus == 200 || onvifStatus == 400 || onvifStatus == 401) {
-        // ONVIF endpoint responded — it's a camera
-        return const _VerifyResult(isCamera: true);
+      // Body keyword match — camera login pages always contain these
+      const cameraKeywords = [
+        'hikvision', 'dahua', 'axis camera', 'reolink', 'foscam',
+        'amcrest', 'ip camera', 'ipcam', 'nvr', 'dvr login',
+        'webcam', 'onvif', 'rtsp://', 'channel=1',
+      ];
+      for (final kw in cameraKeywords) {
+        if (body.contains(kw)) return const _VerifyResult(isCamera: true);
       }
 
-      // 3. Try Hikvision ISAPI path
-      final hikReq = await client
-          .getUrl(Uri.parse('$scheme://$ip:$port/ISAPI/System/deviceInfo'))
-          .timeout(const Duration(seconds: 2));
-      hikReq.headers.set('Connection', 'close');
-      final hikRes = await hikReq.close().timeout(const Duration(seconds: 2));
-      if (hikRes.statusCode == 401 || hikRes.statusCode == 200) {
-        await hikRes.drain<void>();
-        return const _VerifyResult(isCamera: true, brand: 'Hikvision');
-      }
-      await hikRes.drain<void>();
+      // 2. Try ONVIF with a real SOAP request — check body for SOAP/ONVIF response
+      // Do NOT accept 401 alone — any server returns 401 on unknown paths
+      try {
+        const soap =
+            '<?xml version="1.0"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">'
+            '<s:Body><tds:GetDeviceInformation xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>'
+            '</s:Body></s:Envelope>';
+        final onvifReq = await client
+            .postUrl(Uri.parse('$scheme://$ip:$port/onvif/device_service'))
+            .timeout(const Duration(seconds: 2));
+        onvifReq.headers.set('Content-Type', 'application/soap+xml');
+        onvifReq.headers.set('Connection', 'close');
+        onvifReq.write(soap);
+        final onvifRes = await onvifReq.close().timeout(const Duration(seconds: 3));
+        final onvifBody = await onvifRes
+            .transform(utf8.decoder)
+            .join()
+            .timeout(const Duration(seconds: 2));
+        // Real ONVIF cameras return a SOAP envelope with onvif namespaces
+        if ((onvifRes.statusCode == 200 || onvifRes.statusCode == 400) &&
+            (onvifBody.contains('onvif') ||
+             onvifBody.contains('Envelope') ||
+             onvifBody.contains('tds:'))) {
+          return const _VerifyResult(isCamera: true);
+        }
+      } catch (_) {}
+
+      // 3. Hikvision ISAPI — only valid if body contains XML device info
+      try {
+        final hikReq = await client
+            .getUrl(Uri.parse('$scheme://$ip:$port/ISAPI/System/deviceInfo'))
+            .timeout(const Duration(seconds: 2));
+        hikReq.headers.set('Connection', 'close');
+        final hikRes = await hikReq.close().timeout(const Duration(seconds: 2));
+        if (hikRes.statusCode == 200) {
+          final hikBody = await hikRes
+              .transform(utf8.decoder)
+              .join()
+              .timeout(const Duration(seconds: 2));
+          if (hikBody.contains('DeviceInfo') || hikBody.contains('deviceName')) {
+            return const _VerifyResult(isCamera: true, brand: 'Hikvision');
+          }
+        } else {
+          await hikRes.drain<void>();
+        }
+      } catch (_) {}
+
+      // 4. Dahua magic box — returns plaintext like "DeviceType=IPC"
+      try {
+        final dhReq = await client
+            .getUrl(Uri.parse(
+                '$scheme://$ip:$port/cgi-bin/magicBox.cgi?action=getDeviceType'))
+            .timeout(const Duration(seconds: 2));
+        dhReq.headers.set('Connection', 'close');
+        final dhRes = await dhReq.close().timeout(const Duration(seconds: 2));
+        if (dhRes.statusCode == 200) {
+          final dhBody = await dhRes
+              .transform(utf8.decoder)
+              .join()
+              .timeout(const Duration(seconds: 2));
+          if (dhBody.contains('DeviceType') || dhBody.contains('IPC') ||
+              dhBody.contains('NVR') || dhBody.contains('DVR')) {
+            return const _VerifyResult(isCamera: true, brand: 'Dahua');
+          }
+        } else {
+          await dhRes.drain<void>();
+        }
+      } catch (_) {}
 
       client.close();
     } catch (_) {}
