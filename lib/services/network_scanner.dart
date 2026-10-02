@@ -293,11 +293,22 @@ class NetworkScanner {
         if (latency != null) {
           final identity = await fetchIdentityInfo(ip);
           final manufacturer = identity.manufacturer;
+          final lastOctet = ip.split('.').last;
+          String name;
+          if (manufacturer != null) {
+            var type = deviceTypeFromManufacturer(manufacturer);
+            if (manufacturer.toLowerCase().contains('apple')) {
+              type = refineAppleType(identity.hostname);
+            }
+            name = '$type ($lastOctet)';
+          } else if (identity.hostname != null && identity.hostname!.isNotEmpty) {
+            name = '${identity.hostname} ($lastOctet)';
+          } else {
+            name = _guessDeviceName(ip);
+          }
           return Device(
             id: ip,
-            name: manufacturer != null
-                ? '$manufacturer (${ip.split('.').last})'
-                : _guessDeviceName(ip),
+            name: name,
             ip: ip,
             status: DeviceStatus.online,
             latencyMs: latency,
@@ -321,9 +332,59 @@ class NetworkScanner {
 
   static String _guessDeviceName(String ip) {
     final lastOctet = ip.split('.').last;
-    // Common router/gateway IPs
-    if (lastOctet == '1' || lastOctet == '254') return 'Gateway/Router';
-    return 'Device $lastOctet';
+    if (lastOctet == '1' || lastOctet == '254') return 'Gateway / Router';
+    return 'Unknown ($lastOctet)';
+  }
+
+  /// Map a manufacturer name to a human-readable device type label
+  static String deviceTypeFromManufacturer(String? mfr) {
+    if (mfr == null) return '';
+    final m = mfr.toLowerCase();
+    // Apple — distinguish iPhone/iPad vs Mac by hostname hints if available,
+    // but at manufacturer level just say "Apple Device"
+    if (m.contains('apple')) return 'Apple Device';
+    if (m.contains('samsung')) return 'Samsung Device';
+    if (m.contains('google')) return 'Google Device';
+    if (m.contains('xiaomi') || m.contains('poco') || m.contains('redmi')) return 'Xiaomi Device';
+    if (m.contains('huawei') || m.contains('honor')) return 'Huawei Device';
+    if (m.contains('oppo') || m.contains('realme') || m.contains('oneplus')) return 'OPPO / OnePlus';
+    if (m.contains('lg')) return 'LG Device';
+    if (m.contains('sony')) return 'Sony Device';
+    if (m.contains('microsoft')) return 'Windows PC';
+    if (m.contains('dell')) return 'Dell PC';
+    if (m.contains('hp') || m.contains('hewlett')) return 'HP PC';
+    if (m.contains('lenovo') || m.contains('thinkpad')) return 'Lenovo PC';
+    if (m.contains('asus')) return 'ASUS PC';
+    if (m.contains('intel') || m.contains('realtek')) return 'PC / Laptop';
+    if (m.contains('raspberry')) return 'Raspberry Pi';
+    if (m.contains('vmware') || m.contains('parallels')) return 'Virtual Machine';
+    if (m.contains('nintendo')) return 'Nintendo Console';
+    if (m.contains('amazon')) return 'Amazon Device';
+    if (m.contains('cisco')) return 'Cisco Device';
+    if (m.contains('tp-link') || m.contains('tplink')) return 'TP-Link Router';
+    if (m.contains('netgear')) return 'Netgear Router';
+    if (m.contains('d-link') || m.contains('dlink')) return 'D-Link Router';
+    if (m.contains('ubiquiti') || m.contains('ubnt')) return 'Ubiquiti Device';
+    if (m.contains('mikrotik')) return 'MikroTik Router';
+    if (m.contains('linksys')) return 'Linksys Router';
+    if (m.contains('belkin')) return 'Belkin Router';
+    return mfr; // fallback: show raw manufacturer name
+  }
+
+  /// Refine Apple device type using hostname clues
+  static String refineAppleType(String? hostname) {
+    if (hostname == null) return 'Apple Device';
+    final h = hostname.toLowerCase();
+    if (h.contains('iphone')) return 'iPhone';
+    if (h.contains('ipad')) return 'iPad';
+    if (h.contains('macbook')) return 'MacBook';
+    if (h.contains('imac')) return 'iMac';
+    if (h.contains('mac-mini') || h.contains('macmini')) return 'Mac Mini';
+    if (h.contains('appletv') || h.contains('apple-tv')) return 'Apple TV';
+    if (h.contains('homepod')) return 'HomePod';
+    if (h.contains('watch')) return 'Apple Watch';
+    if (h.contains('mac')) return 'Mac';
+    return 'Apple Device';
   }
 
   /// Get MAC address via ARP cache (desktop only — Android/iOS restrict MAC access)
