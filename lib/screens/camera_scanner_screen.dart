@@ -197,12 +197,17 @@ class CameraScannerScreen extends StatefulWidget {
 
 class _CameraScannerScreenState extends State<CameraScannerScreen> {
   final _subnetCtrl = TextEditingController();
+  final _userCtrl = TextEditingController();
+  final _passCtrl = TextEditingController();
   bool _scanning = false;
   int _progress = 0;
   int _total = 254;
   String _status = '';
   List<CameraDevice> _found = [];
   String? _error;
+
+  String? get _customUser => _userCtrl.text.trim().isEmpty ? null : _userCtrl.text.trim();
+  String? get _customPass => _passCtrl.text.isEmpty ? null : _passCtrl.text;
 
   @override
   void initState() {
@@ -219,6 +224,8 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
   @override
   void dispose() {
     _subnetCtrl.dispose();
+    _userCtrl.dispose();
+    _passCtrl.dispose();
     super.dispose();
   }
 
@@ -277,7 +284,7 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
       if (!verified.isCamera) continue; // skip non-cameras
       if (verified.brand != null) brand = verified.brand;
 
-      final info = await _fetchCameraInfo(ip, ports, brand);
+      final info = await _fetchCameraInfo(ip, ports, brand, _customUser, _customPass);
 
       final device = CameraDevice(
         ip: ip,
@@ -481,7 +488,8 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
   // ── Fetch device info ────────────────────────────────────────────────────
 
   Future<CameraInfo?> _fetchCameraInfo(
-      String ip, List<int> ports, String? brand) async {
+      String ip, List<int> ports, String? brand,
+      [String? customUser, String? customPass]) async {
     CameraInfo? best;
 
     // 1. RTSP OPTIONS Server header — no auth, fast
@@ -499,18 +507,21 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
     // 2. HTTP root page title + meta — no auth
     best = _mergeInfo(best, await _fetchPageInfo(ip, httpPort, scheme));
 
-    // 3. ONVIF without auth
+    // 3. ONVIF — custom creds first, then no auth, then brand defaults
+    if (customUser != null) {
+      best = _mergeInfo(best,
+          await _fetchOnvif(ip, httpPort, scheme, customUser, customPass));
+      if (best != null && best.model != null) return best;
+    }
     best = _mergeInfo(best, await _fetchOnvif(ip, httpPort, scheme, null, null));
     if (best != null && best.model != null) return best;
 
-    // 4. ONVIF with default credentials per brand
     final b = best?.manufacturer ?? brand ?? '';
     final profile = _brands[b];
     if (profile != null) {
       best = _mergeInfo(best,
           await _fetchOnvif(ip, httpPort, scheme, profile.defaultUser, profile.defaultPass));
     } else {
-      // Try common defaults
       for (final cred in [('admin', '12345'), ('admin', 'admin'), ('admin', '')]) {
         final r = await _fetchOnvif(ip, httpPort, scheme, cred.$1, cred.$2);
         best = _mergeInfo(best, r);
@@ -518,19 +529,33 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
       }
     }
 
-    // 5. Hikvision ISAPI (try without auth, then with admin/12345)
+    // 4. Hikvision ISAPI — custom creds, no auth, then admin/12345
     if (b == 'Hikvision' || b.isEmpty) {
-      best = _mergeInfo(best, await _fetchHikvision(ip, httpPort, scheme, null, null));
+      if (customUser != null) {
+        best = _mergeInfo(best,
+            await _fetchHikvision(ip, httpPort, scheme, customUser, customPass));
+      }
       if (best?.model == null) {
-        best = _mergeInfo(best, await _fetchHikvision(ip, httpPort, scheme, 'admin', '12345'));
+        best = _mergeInfo(best, await _fetchHikvision(ip, httpPort, scheme, null, null));
+      }
+      if (best?.model == null) {
+        best = _mergeInfo(best,
+            await _fetchHikvision(ip, httpPort, scheme, 'admin', '12345'));
       }
     }
 
-    // 6. Dahua CGI (try without auth, then admin/admin)
+    // 5. Dahua CGI — custom creds, no auth, then admin/admin
     if (b == 'Dahua' || b.isEmpty) {
-      best = _mergeInfo(best, await _fetchDahua(ip, httpPort, scheme, null, null));
+      if (customUser != null) {
+        best = _mergeInfo(best,
+            await _fetchDahua(ip, httpPort, scheme, customUser, customPass));
+      }
       if (best?.model == null) {
-        best = _mergeInfo(best, await _fetchDahua(ip, httpPort, scheme, 'admin', 'admin'));
+        best = _mergeInfo(best, await _fetchDahua(ip, httpPort, scheme, null, null));
+      }
+      if (best?.model == null) {
+        best = _mergeInfo(best,
+            await _fetchDahua(ip, httpPort, scheme, 'admin', 'admin'));
       }
     }
 
@@ -776,11 +801,53 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
 
   // ─── Build ───────────────────────────────────────────────────────────────
 
+  Future<void> _exportCsv() async {
+    final buf = StringBuffer();
+    buf.writeln('IP,MAC,Brand,Manufacturer,Model,Type,Firmware,Serial,Open Ports,Stream URL');
+    for (final cam in _found) {
+      String csv(String? s) {
+        if (s == null || s.isEmpty) return '';
+        if (s.contains(',') || s.contains('"')) return '"${s.replaceAll('"', '""')}"';
+        return s;
+      }
+      final openPorts = cam.openPorts.join(' ');
+      buf.writeln([
+        csv(cam.ip), csv(cam.mac), csv(cam.brand),
+        csv(cam.info?.manufacturer), csv(cam.info?.model),
+        csv(cam.info?.deviceType), csv(cam.info?.firmware),
+        csv(cam.info?.serial), csv(openPorts), csv(cam.streamUrl()),
+      ].join(','));
+    }
+
+    final dir = Directory(
+        '${Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '.'}'
+        '\\Documents');
+    if (!await dir.exists()) await dir.create(recursive: true);
+    final ts = DateTime.now().toString().replaceAll(RegExp(r'[: ]'), '-').split('.').first;
+    final file = File('${dir.path}\\UnifyNetMonitor_Cameras_$ts.csv');
+    await file.writeAsString(buf.toString());
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Exported to ${file.path}'),
+        duration: const Duration(seconds: 4),
+        backgroundColor: const Color(0xFF111927),
+        action: SnackBarAction(
+          label: 'Open Folder',
+          textColor: const Color(0xFF00D4FF),
+          onPressed: () => Process.run('explorer.exe', [dir.path]),
+        ),
+      ));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(children: [
       _Header(
         subnetCtrl: _subnetCtrl,
+        userCtrl: _userCtrl,
+        passCtrl: _passCtrl,
         scanning: _scanning,
         progress: _progress,
         total: _total,
@@ -788,6 +855,7 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
         status: _status,
         onScan: _scan,
         onStop: _stop,
+        onExport: _found.isNotEmpty ? _exportCsv : null,
         error: _error,
       ),
       Expanded(
@@ -813,9 +881,11 @@ class _VerifyResult {
 
 // ─── Header ───────────────────────────────────────────────────────────────
 
-class _Header extends StatelessWidget {
+class _Header extends StatefulWidget {
   const _Header({
     required this.subnetCtrl,
+    required this.userCtrl,
+    required this.passCtrl,
     required this.scanning,
     required this.progress,
     required this.total,
@@ -823,15 +893,45 @@ class _Header extends StatelessWidget {
     required this.status,
     required this.onScan,
     required this.onStop,
+    this.onExport,
     required this.error,
   });
 
-  final TextEditingController subnetCtrl;
+  final TextEditingController subnetCtrl, userCtrl, passCtrl;
   final bool scanning;
   final int progress, total, found;
   final String status;
   final VoidCallback onScan, onStop;
+  final VoidCallback? onExport;
   final String? error;
+
+  @override
+  State<_Header> createState() => _HeaderState();
+}
+
+class _HeaderState extends State<_Header> {
+  bool _showPass = false;
+
+  InputDecoration _field(String label, String hint, IconData icon,
+      {String? error}) =>
+      InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(color: Color(0xFF4A6480)),
+        labelText: label,
+        labelStyle: const TextStyle(color: Color(0xFF7A96B8), fontSize: 12),
+        prefixIcon: Icon(icon, color: const Color(0xFF4A6480), size: 17),
+        filled: true,
+        fillColor: const Color(0xFF111927),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Color(0xFF1E2D45))),
+        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Color(0xFF1E2D45))),
+        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Color(0xFF00D4FF))),
+        errorText: error,
+        errorStyle: const TextStyle(fontSize: 11),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -841,6 +941,7 @@ class _Header extends StatelessWidget {
         border: Border(bottom: BorderSide(color: Color(0xFF1E2D45))),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        // Title row
         Row(children: [
           const Icon(Icons.videocam, color: Color(0xFF00D4FF), size: 20),
           const SizedBox(width: 8),
@@ -851,60 +952,89 @@ class _Header extends StatelessWidget {
           const Text('— verified cameras only',
               style: TextStyle(color: Color(0xFF4A6480), fontSize: 12)),
           const Spacer(),
-          if (found > 0)
+          if (widget.found > 0) ...[
+            if (widget.onExport != null)
+              InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: widget.onExport,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E2D45),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0xFF2A3F5F)),
+                  ),
+                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.download, color: Colors.white54, size: 13),
+                    SizedBox(width: 5),
+                    Text('Export CSV',
+                        style: TextStyle(color: Colors.white54, fontSize: 11)),
+                  ]),
+                ),
+              ),
+            const SizedBox(width: 8),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
               decoration: BoxDecoration(
                 color: const Color(0xFF00D4FF).withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                    color: const Color(0xFF00D4FF).withValues(alpha: 0.3)),
+                border: Border.all(color: const Color(0xFF00D4FF).withValues(alpha: 0.3)),
               ),
-              child: Text('$found found',
-                  style: const TextStyle(
-                      color: Color(0xFF00D4FF), fontSize: 11,
+              child: Text('${widget.found} found',
+                  style: const TextStyle(color: Color(0xFF00D4FF), fontSize: 11,
                       fontWeight: FontWeight.w600)),
             ),
+          ],
         ]),
         const SizedBox(height: 12),
+
+        // Subnet + scan button row
         Row(children: [
           Expanded(
+            flex: 3,
             child: TextField(
-              controller: subnetCtrl,
-              enabled: !scanning,
+              controller: widget.subnetCtrl,
+              enabled: !widget.scanning,
               style: const TextStyle(color: Colors.white, fontSize: 13),
-              decoration: InputDecoration(
-                hintText: '192.168.1',
-                hintStyle: const TextStyle(color: Color(0xFF4A6480)),
-                labelText: 'Subnet prefix (/24)',
-                labelStyle:
-                    const TextStyle(color: Color(0xFF7A96B8), fontSize: 12),
-                prefixIcon: const Icon(Icons.lan_outlined,
-                    color: Color(0xFF4A6480), size: 17),
-                filled: true,
-                fillColor: const Color(0xFF111927),
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: const BorderSide(color: Color(0xFF1E2D45))),
-                enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: const BorderSide(color: Color(0xFF1E2D45))),
-                focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: const BorderSide(color: Color(0xFF00D4FF))),
-                errorText: error,
-                errorStyle: const TextStyle(fontSize: 11),
+              decoration: _field('Subnet prefix (/24)', '192.168.1',
+                  Icons.lan_outlined, error: widget.error),
+            ),
+          ),
+          const SizedBox(width: 10),
+          // Username
+          Expanded(
+            flex: 2,
+            child: TextField(
+              controller: widget.userCtrl,
+              enabled: !widget.scanning,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+              decoration: _field('Username (optional)', 'admin', Icons.person_outline),
+            ),
+          ),
+          const SizedBox(width: 10),
+          // Password
+          Expanded(
+            flex: 2,
+            child: TextField(
+              controller: widget.passCtrl,
+              enabled: !widget.scanning,
+              obscureText: !_showPass,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+              decoration: _field('Password (optional)', '', Icons.lock_outline).copyWith(
+                suffixIcon: IconButton(
+                  icon: Icon(_showPass ? Icons.visibility_off : Icons.visibility,
+                      color: const Color(0xFF4A6480), size: 16),
+                  onPressed: () => setState(() => _showPass = !_showPass),
+                ),
               ),
             ),
           ),
           const SizedBox(width: 10),
           SizedBox(
             height: 40,
-            child: scanning
+            child: widget.scanning
                 ? OutlinedButton.icon(
-                    onPressed: onStop,
+                    onPressed: widget.onStop,
                     icon: const Icon(Icons.stop, size: 15),
                     label: const Text('Stop'),
                     style: OutlinedButton.styleFrom(
@@ -912,25 +1042,24 @@ class _Header extends StatelessWidget {
                         side: const BorderSide(color: Color(0xFFF87171))),
                   )
                 : ElevatedButton.icon(
-                    onPressed: onScan,
+                    onPressed: widget.onScan,
                     icon: const Icon(Icons.search, size: 15),
                     label: const Text('Scan'),
                     style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF00D4FF),
                         foregroundColor: Colors.black,
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 18)),
+                        padding: const EdgeInsets.symmetric(horizontal: 18)),
                   ),
           ),
         ]),
-        if (scanning) ...[
+        if (widget.scanning) ...[
           const SizedBox(height: 10),
           Row(children: [
             Expanded(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(4),
                 child: LinearProgressIndicator(
-                  value: total > 0 ? progress / total : null,
+                  value: widget.total > 0 ? widget.progress / widget.total : null,
                   backgroundColor: const Color(0xFF1E2D45),
                   color: const Color(0xFF00D4FF),
                   minHeight: 4,
@@ -938,12 +1067,12 @@ class _Header extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 10),
-            Text('$progress / $total',
+            Text('${widget.progress} / ${widget.total}',
                 style: const TextStyle(color: Color(0xFF7A96B8), fontSize: 11)),
           ]),
-          if (status.isNotEmpty) ...[
+          if (widget.status.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Text(status,
+            Text(widget.status,
                 style: const TextStyle(color: Color(0xFF4A6480), fontSize: 11)),
           ],
         ],

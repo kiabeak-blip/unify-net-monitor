@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/device.dart';
@@ -531,12 +532,63 @@ class _MonitorView extends StatefulWidget {
 }
 
 class _MonitorViewState extends State<_MonitorView> {
+  bool _showAll = false;
+
+  Future<void> _exportCsv(List<Device> devices) async {
+    final buf = StringBuffer();
+    buf.writeln('Name,IP,Status,Latency (ms),MAC,Hostname,Manufacturer,Open Ports,Last Seen');
+    for (final d in devices) {
+      final openPorts = d.ports.where((p) => p.isOpen).map((p) => p.port).join(' ');
+      final lastSeen = d.lastSeen?.toLocal().toString().split('.').first ?? '';
+      String csv(String? s) {
+        if (s == null || s.isEmpty) return '';
+        if (s.contains(',') || s.contains('"') || s.contains('\n')) {
+          return '"${s.replaceAll('"', '""')}"';
+        }
+        return s;
+      }
+      buf.writeln([
+        csv(d.name), csv(d.ip), csv(d.statusLabel),
+        d.latencyMs?.toStringAsFixed(1) ?? '',
+        csv(d.macAddress), csv(d.hostname), csv(d.manufacturer),
+        csv(openPorts), csv(lastSeen),
+      ].join(','));
+    }
+
+    final dir = Directory(
+        '${Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '.'}'
+        '\\Documents');
+    if (!await dir.exists()) await dir.create(recursive: true);
+    final ts = DateTime.now().toString().replaceAll(RegExp(r'[: ]'), '-').split('.').first;
+    final file = File('${dir.path}\\UnifyNetMonitor_Devices_$ts.csv');
+    await file.writeAsString(buf.toString());
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Exported to ${file.path}'),
+        duration: const Duration(seconds: 4),
+        backgroundColor: const Color(0xFF111927),
+        action: SnackBarAction(
+          label: 'Open Folder',
+          textColor: const Color(0xFF00D4FF),
+          onPressed: () => Process.run('explorer.exe', [dir.path]),
+        ),
+      ));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final dm = context.watch<DeviceManager>();
-    final active = dm.devices
-        .where((d) => d.status == DeviceStatus.online).toList()
-      ..sort((a, b) => (a.latencyMs ?? 9999).compareTo(b.latencyMs ?? 9999));
+    final all = dm.devices.toList()
+      ..sort((a, b) {
+        // online first, then by latency
+        if (a.status == DeviceStatus.online && b.status != DeviceStatus.online) return -1;
+        if (b.status == DeviceStatus.online && a.status != DeviceStatus.online) return 1;
+        return (a.latencyMs ?? 9999).compareTo(b.latencyMs ?? 9999);
+      });
+    final displayed = _showAll ? all : all.where((d) => d.status == DeviceStatus.online).toList();
+    final onlineCount = all.where((d) => d.status == DeviceStatus.online).length;
 
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       _MonitorHeader(dm: dm),
@@ -546,12 +598,62 @@ class _MonitorViewState extends State<_MonitorView> {
             : Padding(
                 padding: const EdgeInsets.all(12),
                 child: _Panel(
-                  title: 'Active Devices', count: active.length,
+                  title: _showAll ? 'All Devices' : 'Active Devices',
+                  count: _showAll ? all.length : onlineCount,
                   accent: const Color(0xFF00FF88), icon: Icons.wifi,
-                  isEmpty: active.isEmpty,
+                  isEmpty: displayed.isEmpty,
                   emptyMsg: dm.isScanning ? 'Scanning…'
                       : 'No active devices.\nClick Scan Network to discover.',
-                  child: _DeviceTable(devices: active, showLatency: true),
+                  trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                    // Show all toggle
+                    InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      onTap: () => setState(() => _showAll = !_showAll),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: _showAll
+                              ? const Color(0xFF00D4FF).withValues(alpha: 0.15)
+                              : const Color(0xFF1E2D45),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                            color: _showAll
+                                ? const Color(0xFF00D4FF).withValues(alpha: 0.4)
+                                : const Color(0xFF2A3F5F),
+                          ),
+                        ),
+                        child: Text(
+                          _showAll ? 'Online only' : 'Show all',
+                          style: TextStyle(
+                            color: _showAll ? const Color(0xFF00D4FF) : Colors.white54,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    // Export CSV
+                    if (all.isNotEmpty)
+                      InkWell(
+                        borderRadius: BorderRadius.circular(6),
+                        onTap: () => _exportCsv(_showAll ? all : displayed),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1E2D45),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: const Color(0xFF2A3F5F)),
+                          ),
+                          child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                            Icon(Icons.download, color: Colors.white54, size: 13),
+                            SizedBox(width: 5),
+                            Text('Export CSV',
+                                style: TextStyle(color: Colors.white54, fontSize: 11)),
+                          ]),
+                        ),
+                      ),
+                  ]),
+                  child: _DeviceTable(devices: displayed, showLatency: true),
                 ),
               ),
       ),
