@@ -199,6 +199,7 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
   final _subnetCtrl = TextEditingController();
   final _userCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
+  final _specificIpCtrl = TextEditingController();
   bool _scanning = false;
   int _progress = 0;
   int _total = 254;
@@ -226,7 +227,51 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
     _subnetCtrl.dispose();
     _userCtrl.dispose();
     _passCtrl.dispose();
+    _specificIpCtrl.dispose();
     super.dispose();
+  }
+
+  // Probe a single known IP directly (forced — skips strict verification)
+  Future<void> _addSpecificIp() async {
+    final ip = _specificIpCtrl.text.trim();
+    if (ip.isEmpty) return;
+    // basic IP validation
+    final parts = ip.split('.');
+    if (parts.length != 4 || parts.any((p) => int.tryParse(p) == null)) {
+      if (mounted) setState(() => _error = 'Invalid IP: $ip');
+      return;
+    }
+    if (_found.any((c) => c.ip == ip)) return; // already added
+
+    setState(() { _status = 'Probing $ip…'; _error = null; });
+
+    final ports = await _probePorts(ip, timeoutMs: 2000);
+    if (ports.isEmpty) {
+      if (mounted) setState(() => _status = 'No camera ports open on $ip');
+      return;
+    }
+
+    final mac = await _getMac(ip);
+    String? brand = _guessBrandFromMac(mac);
+    final verified = await _verifyCamera(ip, ports, force: true);
+    if (!verified.isCamera) {
+      if (mounted) setState(() => _status = 'Could not verify camera at $ip');
+      return;
+    }
+    if (verified.brand != null) brand = verified.brand;
+    final info = await _fetchCameraInfo(ip, ports, brand, _customUser, _customPass);
+
+    final device = CameraDevice(
+      ip: ip, openPorts: ports, verified: true,
+      mac: mac, brand: brand ?? info?.manufacturer, info: info,
+    );
+    if (mounted) {
+      setState(() {
+        _found = [..._found, device];
+        _status = '';
+        _specificIpCtrl.clear();
+      });
+    }
   }
 
   Future<void> _scan() async {
@@ -305,12 +350,12 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
 
   // ── Port probe ───────────────────────────────────────────────────────────
 
-  Future<List<int>> _probePorts(String ip) async {
+  Future<List<int>> _probePorts(String ip, {int timeoutMs = 1200}) async {
     final open = <int>[];
     await Future.wait(_allPorts.map((port) async {
       try {
         final sock = await Socket.connect(ip, port,
-            timeout: const Duration(milliseconds: 500));
+            timeout: Duration(milliseconds: timeoutMs));
         await sock.close();
         open.add(port);
       } catch (_) {}
@@ -320,11 +365,17 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
 
   // ── Camera verification ──────────────────────────────────────────────────
 
-  Future<_VerifyResult> _verifyCamera(String ip, List<int> ports) async {
+  Future<_VerifyResult> _verifyCamera(String ip, List<int> ports,
+      {bool force = false}) async {
     // Proprietary DVR/NVR ports are very strong indicators
     if (ports.any((p) => _proprietaryPorts.contains(p))) {
       return const _VerifyResult(isCamera: true);
     }
+
+    // RTSP + any HTTP port open together → very likely a camera
+    final hasRtsp = ports.any((p) => _rtspPorts.contains(p));
+    final hasHttp = ports.any((p) => _httpPorts.contains(p));
+    if (hasRtsp && hasHttp) return const _VerifyResult(isCamera: true);
 
     // Check RTSP ports — send OPTIONS and look for RTSP/1.0 response
     for (final port in ports.where((p) => _rtspPorts.contains(p))) {
@@ -336,6 +387,11 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
     for (final port in ports.where((p) => _httpPorts.contains(p))) {
       final r = await _checkHttp(ip, port);
       if (r.isCamera) return r;
+    }
+
+    // If caller forced this IP (manual entry), accept if any camera port is open
+    if (force && (hasRtsp || hasHttp || ports.isNotEmpty)) {
+      return const _VerifyResult(isCamera: true);
     }
 
     return const _VerifyResult(isCamera: false);
@@ -848,6 +904,7 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
         subnetCtrl: _subnetCtrl,
         userCtrl: _userCtrl,
         passCtrl: _passCtrl,
+        specificIpCtrl: _specificIpCtrl,
         scanning: _scanning,
         progress: _progress,
         total: _total,
@@ -855,6 +912,7 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
         status: _status,
         onScan: _scan,
         onStop: _stop,
+        onAddIp: _addSpecificIp,
         onExport: _found.isNotEmpty ? _exportCsv : null,
         error: _error,
       ),
@@ -886,6 +944,7 @@ class _Header extends StatefulWidget {
     required this.subnetCtrl,
     required this.userCtrl,
     required this.passCtrl,
+    required this.specificIpCtrl,
     required this.scanning,
     required this.progress,
     required this.total,
@@ -893,15 +952,16 @@ class _Header extends StatefulWidget {
     required this.status,
     required this.onScan,
     required this.onStop,
+    required this.onAddIp,
     this.onExport,
     required this.error,
   });
 
-  final TextEditingController subnetCtrl, userCtrl, passCtrl;
+  final TextEditingController subnetCtrl, userCtrl, passCtrl, specificIpCtrl;
   final bool scanning;
   final int progress, total, found;
   final String status;
-  final VoidCallback onScan, onStop;
+  final VoidCallback onScan, onStop, onAddIp;
   final VoidCallback? onExport;
   final String? error;
 
@@ -1052,24 +1112,51 @@ class _HeaderState extends State<_Header> {
                   ),
           ),
         ]),
-        if (widget.scanning) ...[
+        const SizedBox(height: 10),
+        // Specific IP row — add a single camera by IP without a full subnet scan
+        Row(children: [
+          Expanded(
+            child: TextField(
+              controller: widget.specificIpCtrl,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+              decoration: _field('Add camera by IP', '10.0.0.50', Icons.add_circle_outline),
+              onSubmitted: (_) => widget.onAddIp(),
+            ),
+          ),
+          const SizedBox(width: 10),
+          SizedBox(
+            height: 40,
+            child: ElevatedButton.icon(
+              onPressed: widget.onAddIp,
+              icon: const Icon(Icons.add, size: 15),
+              label: const Text('Add IP'),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E3A5F),
+                  foregroundColor: const Color(0xFF00D4FF),
+                  side: const BorderSide(color: Color(0xFF00D4FF)),
+                  padding: const EdgeInsets.symmetric(horizontal: 14)),
+            ),
+          ),
+        ]),
+        if (widget.scanning || widget.status.isNotEmpty) ...[
           const SizedBox(height: 10),
-          Row(children: [
-            Expanded(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: LinearProgressIndicator(
-                  value: widget.total > 0 ? widget.progress / widget.total : null,
-                  backgroundColor: const Color(0xFF1E2D45),
-                  color: const Color(0xFF00D4FF),
-                  minHeight: 4,
+          if (widget.scanning)
+            Row(children: [
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: widget.total > 0 ? widget.progress / widget.total : null,
+                    backgroundColor: const Color(0xFF1E2D45),
+                    color: const Color(0xFF00D4FF),
+                    minHeight: 4,
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(width: 10),
-            Text('${widget.progress} / ${widget.total}',
-                style: const TextStyle(color: Color(0xFF7A96B8), fontSize: 11)),
-          ]),
+              const SizedBox(width: 10),
+              Text('${widget.progress} / ${widget.total}',
+                  style: const TextStyle(color: Color(0xFF7A96B8), fontSize: 11)),
+            ]),
           if (widget.status.isNotEmpty) ...[
             const SizedBox(height: 4),
             Text(widget.status,
