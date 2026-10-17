@@ -1,6 +1,7 @@
 // lib/screens/windows_dashboard.dart
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -535,7 +536,72 @@ class _MonitorViewState extends State<_MonitorView> {
   bool _showAll = false;
   bool _rdpQuerying = false;
 
-  // ── RDP (3389): query session list via qwinsta, fallback nbtstat ──────────
+  // ── Raw NBNS UDP Node Status query (port 137) ────────────────────────────
+  // Does NOT require admin rights. Works when NetBIOS over TCP/IP is enabled.
+  // Returns map of {name: type} e.g. {"DESKTOP-PC": 0x00, "JOHN": 0x03}
+  Future<Map<String, int>> _rawNbns(String ip) async {
+    try {
+      final sock = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      // Node Status Request — wildcard '*' encoded as CKAA…AA
+      final pkt = Uint8List.fromList([
+        0xAB, 0xCD,             // Transaction ID
+        0x00, 0x10,             // Flags: NB_STATUS query
+        0x00, 0x01,             // QDCOUNT = 1
+        0x00, 0x00,             // ANCOUNT
+        0x00, 0x00,             // NSCOUNT
+        0x00, 0x00,             // ARCOUNT
+        0x20,                   // QNAME length = 32
+        0x43, 0x4B,             // '*' (0x2A) half-byte encoded = 'C','K'
+        0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, // null bytes × 15 → AA×15
+        0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+        0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+        0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+        0x00,                   // null terminator
+        0x00, 0x21,             // QTYPE: NBSTAT (33)
+        0x00, 0x01,             // QCLASS: IN
+      ]);
+
+      sock.send(pkt, InternetAddress(ip), 137);
+
+      final completer = Completer<Datagram?>();
+      Timer(const Duration(seconds: 2), () {
+        if (!completer.isCompleted) completer.complete(null);
+      });
+      sock.listen((e) {
+        if (e == RawSocketEvent.read) {
+          final d = sock.receive();
+          if (d != null && !completer.isCompleted) completer.complete(d);
+        }
+      }, onError: (_) {
+        if (!completer.isCompleted) completer.complete(null);
+      });
+
+      final dg = await completer.future;
+      sock.close();
+      if (dg == null || dg.data.length < 62) return {};
+
+      final data = dg.data;
+      // Response layout: Header(12) + QuestionName(34) + QType+Class(4)
+      //   + RR Name(2) + Type(2) + Class(2) + TTL(4) + RDLen(2) = offset 62
+      final offset62 = 62;
+      if (offset62 >= data.length) return {};
+      final numNames = data[offset62];
+      final result = <String, int>{};
+      for (int i = 0; i < numNames; i++) {
+        final base = offset62 + 1 + i * 18;
+        if (base + 18 > data.length) break;
+        final rawName = String.fromCharCodes(
+            data.sublist(base, base + 15)).trimRight().trim();
+        final type = data[base + 15];
+        result[rawName] = type;
+      }
+      return result;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  // ── Main per-device query ─────────────────────────────────────────────────
   Future<_RdpUserResult> _queryDevice(Device device) async {
     final openPorts = device.ports.where((p) => p.isOpen).map((p) => p.port).toSet();
     final hasRdp = openPorts.contains(3389);
@@ -548,44 +614,64 @@ class _MonitorViewState extends State<_MonitorView> {
     String? error;
     String portLabel = hasRdp ? 'RDP' : hasSsh ? 'SSH' : 'Telnet';
 
-    // ── RDP: qwinsta /server — reads active RDP sessions directly ────────
+    // ── Windows (RDP port 3389) ───────────────────────────────────────────
     if (hasRdp) {
-      try {
-        final res = await Process.run(
-            'query', ['session', '/server:${device.ip}'],
-            stdoutEncoding: const SystemEncoding())
-            .timeout(const Duration(seconds: 8));
-        final out = res.stdout.toString();
-        // Each line: " SESSIONNAME  USERNAME  ID  STATE ..."
-        // Username column is 2nd field; skip header and empty/system sessions
-        for (final line in out.split('\n')) {
-          final parts = line.trim().split(RegExp(r'\s{2,}'));
-          if (parts.length >= 3) {
-            final user = parts[1].trim();
-            if (user.isNotEmpty &&
-                !user.toUpperCase().contains('USERNAME') &&
-                user != 'services' &&
-                user != 'console') {
-              usernames.add(user);
-            }
-          }
-        }
-      } catch (_) {}
+      // Method 1: raw NBNS UDP to port 137 — no admin rights needed
+      final nbns = await _rawNbns(device.ip);
+      if (nbns.isNotEmpty) {
+        // Computer name = type 0x00 entry
+        computerName = nbns.entries
+            .where((e) => e.value == 0x00)
+            .map((e) => e.key)
+            .firstOrNull;
+        // Logged-in username = type 0x03 entry that isn't the computer name
+        final u03 = nbns.entries
+            .where((e) => e.value == 0x03 && e.key != computerName)
+            .map((e) => e.key)
+            .toList();
+        usernames.addAll(u03);
+      }
 
-      // Fallback to nbtstat <03> if qwinsta found nothing
+      // Method 2: query session /server — needs admin but try anyway
       if (usernames.isEmpty) {
         try {
-          await Process.run('ping', ['-n', '1', '-w', '500', device.ip]);
-          final res = await Process.run('nbtstat', ['-A', device.ip],
-              stdoutEncoding: const SystemEncoding())
+          final res = await Process.run(
+              'query', ['session', '/server:${device.ip}'],
+              stdoutEncoding: const SystemEncoding(),
+              stderrEncoding: const SystemEncoding())
               .timeout(const Duration(seconds: 6));
           final out = res.stdout.toString();
-          final compMatch = RegExp(
-                  r'^\s*(\S+)\s+<00>\s+UNIQUE', multiLine: true, caseSensitive: false)
-              .firstMatch(out);
-          computerName = compMatch?.group(1)?.trim().toUpperCase();
-          final u03 = RegExp(
-                  r'^\s*(\S+)\s+<03>\s+UNIQUE', multiLine: true, caseSensitive: false)
+          // Match Active sessions: ">? sessionName  username  ID  Active"
+          for (final line in out.split('\n')) {
+            final m = RegExp(
+                    r'^\s*>?\s*\S+\s{2,}(\S+)\s+\d+\s+Active',
+                    caseSensitive: false)
+                .firstMatch(line);
+            if (m != null) {
+              final u = m.group(1)?.trim() ?? '';
+              if (u.isNotEmpty && u.toLowerCase() != 'username') {
+                usernames.add(u);
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
+      // Method 3: nbtstat -A fallback (works on older Windows)
+      if (usernames.isEmpty) {
+        try {
+          final res = await Process.run('nbtstat', ['-A', device.ip],
+              stdoutEncoding: const SystemEncoding())
+              .timeout(const Duration(seconds: 5));
+          final out = res.stdout.toString();
+          if (computerName == null) {
+            final m = RegExp(r'^\s*(\S+)\s+<00>\s+UNIQUE',
+                    multiLine: true, caseSensitive: false)
+                .firstMatch(out);
+            computerName = m?.group(1)?.trim().toUpperCase();
+          }
+          final u03 = RegExp(r'^\s*(\S+)\s+<03>\s+UNIQUE',
+                  multiLine: true, caseSensitive: false)
               .allMatches(out)
               .map((m) => m.group(1)!.trim().toUpperCase())
               .where((u) => u != computerName)
@@ -594,23 +680,14 @@ class _MonitorViewState extends State<_MonitorView> {
         } catch (_) {}
       }
 
-      // Get computer name via nbtstat if still missing
-      if (computerName == null) {
-        try {
-          final res = await Process.run('nbtstat', ['-A', device.ip],
-              stdoutEncoding: const SystemEncoding())
-              .timeout(const Duration(seconds: 4));
-          final compMatch = RegExp(
-                  r'^\s*(\S+)\s+<00>\s+UNIQUE', multiLine: true, caseSensitive: false)
-              .firstMatch(res.stdout.toString());
-          computerName = compMatch?.group(1)?.trim().toUpperCase();
-        } catch (_) {}
+      if (usernames.isEmpty) {
+        error = computerName != null
+            ? 'No user currently logged in to $computerName'
+            : 'No NetBIOS response — check firewall or NetBIOS over TCP/IP setting';
       }
-
-      if (usernames.isEmpty) error = 'No active session found';
     }
 
-    // ── SSH (22): read server banner ──────────────────────────────────────
+    // ── SSH (22) ─────────────────────────────────────────────────────────
     if (hasSsh) {
       try {
         final sock = await Socket.connect(device.ip, 22,
@@ -624,32 +701,33 @@ class _MonitorViewState extends State<_MonitorView> {
         },
             onDone: () { if (!done.isCompleted) done.complete(); },
             onError: (_) { if (!done.isCompleted) done.complete(); });
-        await done.future.timeout(const Duration(seconds: 2), onTimeout: () {});
+        await done.future
+            .timeout(const Duration(seconds: 2), onTimeout: () {});
         await sub.cancel();
         await sock.close();
         final raw = buf.toString().trim();
-        // SSH banner format: SSH-2.0-OpenSSH_9.0p1 Ubuntu-3ubuntu0.1
         if (raw.startsWith('SSH-')) {
           banner = raw.split('\n').first.trim();
-          // Extract OS hint from banner
-          final osHint = _parseSshOs(banner);
+          final osHint = _parseSshOs(banner!);
           if (osHint != null && usernames.isEmpty) usernames.add(osHint);
+        } else {
+          error ??= 'No SSH banner returned';
         }
-        if (banner == null || banner!.isEmpty) error = 'No SSH banner returned';
       } catch (_) {
-        error = 'SSH connection failed';
+        error ??= 'SSH connection failed';
       }
-      portLabel = hasRdp ? portLabel : 'SSH';
+      if (!hasRdp) portLabel = 'SSH';
     }
 
-    // ── Telnet (23): read login banner ────────────────────────────────────
+    // ── Telnet (23) ───────────────────────────────────────────────────────
     if (hasTelnet) {
       try {
         final sock = await Socket.connect(device.ip, 23,
             timeout: const Duration(seconds: 3));
         final buf = <int>[];
         final done = Completer<void>();
-        Timer(const Duration(seconds: 2), () { if (!done.isCompleted) done.complete(); });
+        Timer(const Duration(seconds: 2),
+            () { if (!done.isCompleted) done.complete(); });
         late StreamSubscription sub;
         sub = sock.listen((data) {
           buf.addAll(data);
@@ -660,7 +738,7 @@ class _MonitorViewState extends State<_MonitorView> {
         await done.future;
         await sub.cancel();
         await sock.close();
-        // Strip telnet IAC control bytes (0xFF and the two following bytes)
+        // Strip IAC control bytes (0xFF + 2 following bytes)
         final cleaned = <int>[];
         int skip = 0;
         for (final b in buf) {
@@ -670,8 +748,7 @@ class _MonitorViewState extends State<_MonitorView> {
         }
         final raw = String.fromCharCodes(cleaned).trim();
         if (raw.isNotEmpty) {
-          banner = raw.length > 200 ? raw.substring(0, 200) : raw;
-          // Try to extract hostname from "hostname login:" pattern
+          banner = raw.length > 200 ? '${raw.substring(0, 200)}…' : raw;
           final hostMatch = RegExp(r'^(\S+)\s+(login|User Access)',
                   caseSensitive: false)
               .firstMatch(raw);
@@ -679,10 +756,10 @@ class _MonitorViewState extends State<_MonitorView> {
             computerName = hostMatch.group(1);
           }
         } else {
-          error = 'Empty telnet banner';
+          error ??= 'Empty telnet banner';
         }
       } catch (_) {
-        if (!hasSsh && !hasRdp) error = 'Telnet connection failed';
+        if (!hasSsh && !hasRdp) error ??= 'Telnet connection failed';
       }
       if (!hasRdp && !hasSsh) portLabel = 'Telnet';
     }
