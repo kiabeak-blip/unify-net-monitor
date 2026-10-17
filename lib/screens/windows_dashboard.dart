@@ -796,15 +796,52 @@ class _MonitorViewState extends State<_MonitorView> {
       if (!hasRdp && !hasSsh) portLabel = 'Telnet';
     }
 
+    // ── net user \\<ip> — local accounts ─────────────────────────────────
+    final localUsers = await _queryNetUser(device.ip);
+
     return _RdpUserResult(
       ip: device.ip,
       name: device.name,
       computerName: computerName,
       usernames: usernames,
+      localUsers: localUsers,
       banner: banner,
       portLabel: portLabel,
-      error: usernames.isEmpty && banner == null ? (error ?? 'No info retrieved') : null,
+      error: usernames.isEmpty && banner == null && localUsers.isEmpty
+          ? (error ?? 'No info retrieved')
+          : null,
     );
+  }
+
+  Future<List<String>> _queryNetUser(String ip) async {
+    try {
+      final result = await Process.run(
+        'net',
+        ['user', r'\\' + ip],
+        runInShell: true,
+      ).timeout(const Duration(seconds: 6));
+      final out = result.stdout as String;
+      // Output format:
+      //   User accounts for \\<ip>
+      //   ---------------------
+      //   Administrator   Guest   DefaultAccount ...
+      //   ...
+      //   The command completed successfully.
+      final lines = out.split('\n');
+      final users = <String>[];
+      bool inAccounts = false;
+      for (final line in lines) {
+        final t = line.trim();
+        if (t.startsWith('---')) { inAccounts = true; continue; }
+        if (!inAccounts) continue;
+        if (t.isEmpty || t.startsWith('The command')) break;
+        // Each line can have multiple space-separated usernames
+        users.addAll(t.split(RegExp(r'\s{2,}')).map((s) => s.trim()).where((s) => s.isNotEmpty));
+      }
+      return users;
+    } catch (_) {
+      return [];
+    }
   }
 
   String? _parseSshOs(String banner) {
@@ -1295,6 +1332,7 @@ class _RdpUserResult {
   final String name;
   final String? computerName;
   final List<String> usernames;
+  final List<String> localUsers;
   final String? banner;
   final String portLabel;
   final String? error;
@@ -1304,6 +1342,7 @@ class _RdpUserResult {
     required this.name,
     required this.computerName,
     required this.usernames,
+    this.localUsers = const [],
     this.banner,
     this.portLabel = 'RDP',
     required this.error,
@@ -1337,7 +1376,7 @@ class _RdpUsersDialog extends StatelessWidget {
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text('RDP Usernames', style: TextStyle(color: Colors.white,
                       fontSize: 15, fontWeight: FontWeight.w700)),
-                  Text('Logged-in Windows users on port 3389 devices',
+                  Text('Logged-in users + local accounts via net user',
                       style: TextStyle(color: Colors.white38, fontSize: 11)),
                 ]),
               ),
@@ -1442,8 +1481,52 @@ class _RdpUsersDialog extends StatelessWidget {
                                 ]),
                               ),
                           ]),
+                        if (r.localUsers.isNotEmpty) ...[
+                          if (hasUser) const SizedBox(height: 8),
+                          Text('Local accounts',
+                              style: const TextStyle(
+                                  color: Color(0xFF4ECDC4),
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600)),
+                          const SizedBox(height: 4),
+                          Wrap(spacing: 6, runSpacing: 4, children: [
+                            for (final u in r.localUsers)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF4ECDC4).withValues(alpha: 0.10),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                      color: const Color(0xFF4ECDC4).withValues(alpha: 0.30)),
+                                ),
+                                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                  const Icon(Icons.manage_accounts,
+                                      color: Color(0xFF4ECDC4), size: 11),
+                                  const SizedBox(width: 4),
+                                  Text(u,
+                                      style: const TextStyle(
+                                          color: Color(0xFF4ECDC4),
+                                          fontSize: 11,
+                                          fontFamily: 'monospace')),
+                                  const SizedBox(width: 5),
+                                  InkWell(
+                                    onTap: () {
+                                      Clipboard.setData(ClipboardData(text: u));
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(content: Text('Username copied'),
+                                            duration: Duration(seconds: 2),
+                                            backgroundColor: Color(0xFF111927)));
+                                    },
+                                    child: const Icon(Icons.copy,
+                                        color: Color(0xFF2A5A58), size: 11),
+                                  ),
+                                ]),
+                              ),
+                          ]),
+                        ],
                         if (r.banner != null) ...[
-                          if (hasUser) const SizedBox(height: 6),
+                          if (hasUser || r.localUsers.isNotEmpty) const SizedBox(height: 6),
                           Container(
                             width: double.infinity,
                             padding: const EdgeInsets.all(8),
@@ -1457,7 +1540,7 @@ class _RdpUsersDialog extends StatelessWidget {
                                     fontSize: 10, fontFamily: 'monospace')),
                           ),
                         ],
-                        if (!hasUser && r.banner == null)
+                        if (!hasUser && r.banner == null && r.localUsers.isEmpty)
                           Text(r.error ?? 'No info retrieved',
                               style: const TextStyle(
                                   color: Color(0xFF4A6480), fontSize: 11)),
@@ -1474,8 +1557,8 @@ class _RdpUsersDialog extends StatelessWidget {
             decoration: const BoxDecoration(
                 border: Border(top: BorderSide(color: Color(0xFF1E2D45)))),
             child: const Text(
-              'RDP: uses query session (qwinsta) then nbtstat fallback. '
-              'SSH: reads server version banner. Telnet: reads login prompt.',
+              'Purple = logged-in user (RDP/NBNS). Cyan = local accounts (net user). '
+              'SSH/Telnet show server banner.',
               style: TextStyle(color: Color(0xFF2A3F5F), fontSize: 10),
             ),
           ),
