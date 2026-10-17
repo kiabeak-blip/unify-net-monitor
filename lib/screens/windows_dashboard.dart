@@ -535,6 +535,8 @@ class _MonitorView extends StatefulWidget {
 class _MonitorViewState extends State<_MonitorView> {
   bool _showAll = false;
   bool _rdpQuerying = false;
+  bool _sshQuerying = false;
+  bool _vulnScanning = false;
   String? _rdpUser;
   String? _rdpPass;
 
@@ -1017,6 +1019,123 @@ class _MonitorViewState extends State<_MonitorView> {
     );
   }
 
+  // ── SSH-only banner scan ────────────────────────────────────────────────
+  Future<void> _showSshBanners(BuildContext context, List<Device> targets) async {
+    setState(() => _sshQuerying = true);
+    final results = <_SshBannerResult>[];
+    await Future.wait(targets.map((d) async {
+      final ports = d.ports.where((p) => (p.port == 22 || p.port == 23) && p.isOpen).toList();
+      for (final port in ports) {
+        String? banner;
+        String? os;
+        try {
+          if (port.port == 22) {
+            final sock = await Socket.connect(d.ip, 22,
+                timeout: const Duration(seconds: 4));
+            final bytes = <int>[];
+            await sock.first.timeout(const Duration(seconds: 3)).then((chunk) {
+              bytes.addAll(chunk);
+            }).catchError((_) {});
+            await sock.close();
+            banner = String.fromCharCodes(
+                bytes.where((b) => b >= 32 && b < 127)).trim();
+            os = _parseSshOs(banner);
+          } else {
+            final sock = await Socket.connect(d.ip, 23,
+                timeout: const Duration(seconds: 3));
+            final buf = <int>[];
+            bool done = false;
+            final sub = sock.listen((chunk) {
+              for (int i = 0; i < chunk.length; i++) {
+                if (chunk[i] == 0xFF && i + 2 < chunk.length) { i += 2; continue; }
+                if (chunk[i] >= 32 && chunk[i] < 127) buf.add(chunk[i]);
+              }
+              if (buf.length > 80) done = true;
+            });
+            await Future.delayed(const Duration(seconds: 2));
+            await sub.cancel();
+            await sock.close();
+            banner = String.fromCharCodes(buf).trim();
+            if (banner.isEmpty) banner = null;
+          }
+        } catch (_) {}
+        results.add(_SshBannerResult(
+          ip: d.ip, name: d.name, port: port.port,
+          banner: banner, os: os,
+        ));
+      }
+    }));
+    if (!mounted) return;
+    setState(() => _sshQuerying = false);
+    showDialog(
+      context: context,
+      builder: (_) => _SshBannersDialog(results: results),
+    );
+  }
+
+  // ── Vulnerability scan ─────────────────────────────────────────────────
+  Future<void> _runVulnScan(BuildContext context, List<Device> all) async {
+    setState(() => _vulnScanning = true);
+    await Future.delayed(const Duration(milliseconds: 200)); // let UI update
+    final findings = <_VulnFinding>[];
+
+    for (final d in all) {
+      if (d.status != DeviceStatus.online) continue;
+      final open = d.ports.where((p) => p.isOpen).map((p) => p.port).toSet();
+
+      void add(String title, String detail, _VulnSeverity sev) {
+        findings.add(_VulnFinding(device: d, title: title, detail: detail, severity: sev));
+      }
+
+      // Critical
+      if (open.contains(23))  add('Telnet open', 'Port 23: plaintext credentials, easily intercepted', _VulnSeverity.critical);
+      if (open.contains(6379)) add('Redis exposed', 'Port 6379: Redis is often unauthenticated by default', _VulnSeverity.critical);
+      if (open.contains(27017)) add('MongoDB exposed', 'Port 27017: MongoDB may allow unauthenticated access', _VulnSeverity.critical);
+      if (open.contains(9200)) add('Elasticsearch exposed', 'Port 9200: Elasticsearch may allow unauthenticated reads', _VulnSeverity.critical);
+
+      // High
+      if (open.contains(21))  add('FTP open', 'Port 21: credentials transmitted in plaintext', _VulnSeverity.high);
+      if (open.contains(445)) add('SMB exposed', 'Port 445: SMB — risk of EternalBlue/ransomware if unpatched', _VulnSeverity.high);
+      if (open.contains(5900) || open.contains(5901)) add('VNC exposed', 'Port 590x: remote desktop with weak/no auth', _VulnSeverity.high);
+      if (open.contains(3306)) add('MySQL exposed', 'Port 3306: database directly reachable on network', _VulnSeverity.high);
+      if (open.contains(1433)) add('MSSQL exposed', 'Port 1433: SQL Server directly reachable on network', _VulnSeverity.high);
+      if (open.contains(5432)) add('PostgreSQL exposed', 'Port 5432: database directly reachable on network', _VulnSeverity.high);
+      if (open.contains(512) || open.contains(513) || open.contains(514)) {
+        add('r-services open', 'Ports 512-514: rsh/rexec/rlogin — no encryption, legacy', _VulnSeverity.high);
+      }
+
+      // Medium
+      if (open.contains(3389)) add('RDP exposed', 'Port 3389: brute-force and BlueKeep risk if unpatched', _VulnSeverity.medium);
+      if (open.contains(161))  add('SNMP open', 'Port 161: may leak device info via default community "public"', _VulnSeverity.medium);
+      if (open.contains(69))   add('TFTP open', 'Port 69: unauthenticated file transfer', _VulnSeverity.medium);
+      if (open.contains(135))  add('RPC open', 'Port 135: MSRPC — attack surface for old exploits', _VulnSeverity.medium);
+      if (open.contains(139))  add('NetBIOS-SSN open', 'Port 139: legacy NetBIOS over TCP/IP', _VulnSeverity.medium);
+      if (open.contains(80) && !open.contains(443)) {
+        add('HTTP only (no HTTPS)', 'Port 80 open, port 443 closed — traffic is unencrypted', _VulnSeverity.medium);
+      }
+      if (open.contains(8080) && !open.contains(443) && !open.contains(8443)) {
+        add('Alternate HTTP (8080)', 'Port 8080: unencrypted HTTP alternate port', _VulnSeverity.medium);
+      }
+
+      // Low
+      if (open.contains(80) && open.contains(443)) {
+        add('HTTP redirect check', 'Port 80 open alongside 443 — ensure HTTP redirects to HTTPS', _VulnSeverity.low);
+      }
+      if (open.contains(8888)) add('Jupyter/Dev port', 'Port 8888: commonly used by Jupyter Notebook (may be unauthenticated)', _VulnSeverity.low);
+      if (open.contains(4444) || open.contains(4445)) add('Suspicious port', 'Port 444x: often used by malware/reverse shells', _VulnSeverity.low);
+    }
+
+    // Sort: critical first, then high, medium, low
+    findings.sort((a, b) => a.severity.index.compareTo(b.severity.index));
+
+    if (!mounted) return;
+    setState(() => _vulnScanning = false);
+    showDialog(
+      context: context,
+      builder: (_) => _VulnScanDialog(findings: findings, total: all.where((d) => d.status == DeviceStatus.online).length),
+    );
+  }
+
   Future<void> _exportCsv(List<Device> devices) async {
     final buf = StringBuffer();
     buf.writeln('Name,IP,Status,Latency (ms),MAC,Hostname,Manufacturer,Open Ports,Last Seen');
@@ -1073,7 +1192,9 @@ class _MonitorViewState extends State<_MonitorView> {
     final displayed = _showAll ? all : all.where((d) => d.status == DeviceStatus.online).toList();
     final onlineCount = all.where((d) => d.status == DeviceStatus.online).length;
     final rdpDevices = all.where((d) =>
-        d.ports.any((p) => (p.port == 3389 || p.port == 22 || p.port == 23) && p.isOpen)).toList();
+        d.ports.any((p) => p.port == 3389 && p.isOpen)).toList();
+    final sshDevices = all.where((d) =>
+        d.ports.any((p) => (p.port == 22 || p.port == 23) && p.isOpen)).toList();
 
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       _MonitorHeader(dm: dm),
@@ -1090,34 +1211,36 @@ class _MonitorViewState extends State<_MonitorView> {
                   emptyMsg: dm.isScanning ? 'Scanning…'
                       : 'No active devices.\nClick Scan Network to discover.',
                   trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                    // RDP username lookup
-                    InkWell(
-                      borderRadius: BorderRadius.circular(6),
-                      onTap: _rdpQuerying
-                          ? null
+                    // ── RDP Users ──────────────────────────────────────────
+                    _ToolbarBtn(
+                      label: _rdpQuerying ? 'Querying…'
+                          : 'RDP Users${rdpDevices.isNotEmpty ? " (${rdpDevices.length})" : ""}',
+                      icon: Icons.desktop_windows,
+                      color: const Color(0xFFAB6BFF),
+                      busy: _rdpQuerying,
+                      onTap: rdpDevices.isEmpty || _rdpQuerying ? null
                           : () => _showUserInfo(context, rdpDevices),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF3B1F6B).withValues(alpha: 0.6),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: const Color(0xFFAB6BFF).withValues(alpha: 0.4)),
-                        ),
-                        child: Row(mainAxisSize: MainAxisSize.min, children: [
-                          if (_rdpQuerying)
-                            const SizedBox(width: 10, height: 10,
-                                child: CircularProgressIndicator(strokeWidth: 1.5,
-                                    color: Color(0xFFAB6BFF)))
-                          else
-                            const Icon(Icons.person_search,
-                                color: Color(0xFFAB6BFF), size: 13),
-                          const SizedBox(width: 5),
-                          Text(
-                            _rdpQuerying ? 'Querying…' : 'Users / Banners${rdpDevices.isNotEmpty ? " (${rdpDevices.length})" : ""}',
-                            style: const TextStyle(color: Color(0xFFAB6BFF), fontSize: 11),
-                          ),
-                        ]),
-                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    // ── SSH Banners ─────────────────────────────────────────
+                    _ToolbarBtn(
+                      label: _sshQuerying ? 'Scanning…'
+                          : 'SSH Banners${sshDevices.isNotEmpty ? " (${sshDevices.length})" : ""}',
+                      icon: Icons.terminal,
+                      color: const Color(0xFF4ECDC4),
+                      busy: _sshQuerying,
+                      onTap: sshDevices.isEmpty || _sshQuerying ? null
+                          : () => _showSshBanners(context, sshDevices),
+                    ),
+                    const SizedBox(width: 6),
+                    // ── Vulnerability Scan ──────────────────────────────────
+                    _ToolbarBtn(
+                      label: _vulnScanning ? 'Scanning…' : 'Vuln Scan',
+                      icon: Icons.security,
+                      color: const Color(0xFFFF6B6B),
+                      busy: _vulnScanning,
+                      onTap: all.isEmpty || _vulnScanning ? null
+                          : () => _runVulnScan(context, all),
                     ),
                     const SizedBox(width: 8),
                     // Show all toggle
@@ -1706,6 +1829,350 @@ class _RdpUsersDialog extends StatelessWidget {
             child: const Text(
               'Purple = logged-in user (RDP/NBNS). Cyan = local accounts (net user). '
               'SSH/Telnet show server banner.',
+              style: TextStyle(color: Color(0xFF2A3F5F), fontSize: 10),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+// ─── Toolbar button helper ─────────────────────────────────────────────────
+
+class _ToolbarBtn extends StatelessWidget {
+  const _ToolbarBtn({
+    required this.label, required this.icon, required this.color,
+    required this.busy, required this.onTap,
+  });
+  final String label;
+  final IconData icon;
+  final Color color;
+  final bool busy;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+    borderRadius: BorderRadius.circular(6),
+    onTap: onTap,
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: onTap == null ? 0.05 : 0.12),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withValues(alpha: onTap == null ? 0.15 : 0.35)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        busy
+            ? SizedBox(width: 10, height: 10,
+                child: CircularProgressIndicator(strokeWidth: 1.5, color: color))
+            : Icon(icon, color: onTap == null ? color.withValues(alpha: 0.35) : color, size: 12),
+        const SizedBox(width: 5),
+        Text(label,
+            style: TextStyle(
+                color: onTap == null ? color.withValues(alpha: 0.35) : color,
+                fontSize: 11)),
+      ]),
+    ),
+  );
+}
+
+// ─── SSH Banner Result & Dialog ────────────────────────────────────────────
+
+class _SshBannerResult {
+  final String ip;
+  final String name;
+  final int port;
+  final String? banner;
+  final String? os;
+  const _SshBannerResult({required this.ip, required this.name,
+      required this.port, this.banner, this.os});
+}
+
+class _SshBannersDialog extends StatelessWidget {
+  const _SshBannersDialog({required this.results});
+  final List<_SshBannerResult> results;
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: const Color(0xFF111927),
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: const BorderSide(color: Color(0xFF1E2D45))),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 540, maxHeight: 480),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+            padding: const EdgeInsets.fromLTRB(20, 16, 16, 14),
+            decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: Color(0xFF1E2D45))),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(12))),
+            child: Row(children: [
+              const Icon(Icons.terminal, color: Color(0xFF4ECDC4), size: 18),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('SSH / Telnet Banners',
+                      style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w700)),
+                  Text('Server version banners from SSH (22) and Telnet (23) devices',
+                      style: TextStyle(color: Colors.white38, fontSize: 11)),
+                ]),
+              ),
+              IconButton(icon: const Icon(Icons.close, color: Colors.white38, size: 18),
+                  onPressed: () => Navigator.pop(context),
+                  padding: EdgeInsets.zero, constraints: const BoxConstraints()),
+            ]),
+          ),
+          Flexible(
+            child: ListView.separated(
+              padding: const EdgeInsets.all(12),
+              itemCount: results.length,
+              separatorBuilder: (_, __) => const Divider(height: 1, color: Color(0xFF1A2438)),
+              itemBuilder: (_, i) {
+                final r = results[i];
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Row(children: [
+                      const Icon(Icons.circle, color: Color(0xFF4ECDC4), size: 8),
+                      const SizedBox(width: 8),
+                      Text(r.name, style: const TextStyle(color: Colors.white,
+                          fontSize: 13, fontWeight: FontWeight.w500)),
+                      const SizedBox(width: 8),
+                      Text(r.ip, style: const TextStyle(color: Colors.white38,
+                          fontSize: 11, fontFamily: 'monospace')),
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                        decoration: BoxDecoration(color: const Color(0xFF1E2D45),
+                            borderRadius: BorderRadius.circular(4)),
+                        child: Text(r.port == 22 ? 'SSH' : 'Telnet',
+                            style: const TextStyle(color: Color(0xFF4ECDC4),
+                                fontSize: 9, fontWeight: FontWeight.w700)),
+                      ),
+                      if (r.os != null) ...[
+                        const SizedBox(width: 6),
+                        Text(r.os!, style: const TextStyle(color: Color(0xFF7A96B8), fontSize: 11)),
+                      ],
+                    ]),
+                    if (r.banner != null) ...[
+                      const SizedBox(height: 6),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(color: const Color(0xFF0D1321),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: const Color(0xFF1E2D45))),
+                        child: Text(r.banner!, style: const TextStyle(
+                            color: Color(0xFF4ECDC4), fontSize: 10, fontFamily: 'monospace')),
+                      ),
+                    ] else
+                      const Padding(
+                        padding: EdgeInsets.only(top: 4, left: 16),
+                        child: Text('No banner received', style: TextStyle(
+                            color: Color(0xFF4A6480), fontSize: 11)),
+                      ),
+                  ]),
+                );
+              },
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+// ─── Vulnerability Scan ─────────────────────────────────────────────────────
+
+enum _VulnSeverity { critical, high, medium, low }
+
+class _VulnFinding {
+  final Device device;
+  final String title;
+  final String detail;
+  final _VulnSeverity severity;
+  const _VulnFinding({required this.device, required this.title,
+      required this.detail, required this.severity});
+}
+
+class _VulnScanDialog extends StatefulWidget {
+  const _VulnScanDialog({required this.findings, required this.total});
+  final List<_VulnFinding> findings;
+  final int total;
+
+  @override
+  State<_VulnScanDialog> createState() => _VulnScanDialogState();
+}
+
+class _VulnScanDialogState extends State<_VulnScanDialog> {
+  _VulnSeverity? _filter;
+
+  Color _sevColor(_VulnSeverity s) => switch (s) {
+    _VulnSeverity.critical => const Color(0xFFFF4757),
+    _VulnSeverity.high     => const Color(0xFFFF8C42),
+    _VulnSeverity.medium   => const Color(0xFFFFD93D),
+    _VulnSeverity.low      => const Color(0xFF6BCB77),
+  };
+
+  String _sevLabel(_VulnSeverity s) => switch (s) {
+    _VulnSeverity.critical => 'CRITICAL',
+    _VulnSeverity.high     => 'HIGH',
+    _VulnSeverity.medium   => 'MEDIUM',
+    _VulnSeverity.low      => 'LOW',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final shown = _filter == null
+        ? widget.findings
+        : widget.findings.where((f) => f.severity == _filter).toList();
+
+    final counts = {
+      for (final s in _VulnSeverity.values)
+        s: widget.findings.where((f) => f.severity == s).length,
+    };
+
+    return Dialog(
+      backgroundColor: const Color(0xFF111927),
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: const BorderSide(color: Color(0xFF1E2D45))),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 580, maxHeight: 560),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.fromLTRB(20, 16, 16, 14),
+            decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: Color(0xFF1E2D45))),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(12))),
+            child: Row(children: [
+              const Icon(Icons.security, color: Color(0xFFFF6B6B), size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Vulnerability Report — ${widget.findings.length} finding${widget.findings.length == 1 ? "" : "s"}',
+                      style: const TextStyle(color: Colors.white,
+                          fontSize: 15, fontWeight: FontWeight.w700)),
+                  Text('Scanned ${widget.total} online device${widget.total == 1 ? "" : "s"} for exposed services and risks',
+                      style: const TextStyle(color: Colors.white38, fontSize: 11)),
+                ]),
+              ),
+              IconButton(icon: const Icon(Icons.close, color: Colors.white38, size: 18),
+                  onPressed: () => Navigator.pop(context),
+                  padding: EdgeInsets.zero, constraints: const BoxConstraints()),
+            ]),
+          ),
+          // Severity filter chips
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: Color(0xFF1E2D45)))),
+            child: Row(children: [
+              GestureDetector(
+                onTap: () => setState(() => _filter = null),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                  margin: const EdgeInsets.only(right: 6),
+                  decoration: BoxDecoration(
+                    color: _filter == null ? Colors.white.withValues(alpha: 0.1) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: Text('All (${widget.findings.length})',
+                      style: const TextStyle(color: Colors.white54, fontSize: 10)),
+                ),
+              ),
+              for (final s in _VulnSeverity.values)
+                if (counts[s]! > 0)
+                  GestureDetector(
+                    onTap: () => setState(() => _filter = _filter == s ? null : s),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                      margin: const EdgeInsets.only(right: 6),
+                      decoration: BoxDecoration(
+                        color: _filter == s
+                            ? _sevColor(s).withValues(alpha: 0.2)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: _sevColor(s).withValues(alpha: 0.5)),
+                      ),
+                      child: Text('${_sevLabel(s)} (${counts[s]})',
+                          style: TextStyle(color: _sevColor(s), fontSize: 10,
+                              fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+            ]),
+          ),
+          // Findings list
+          Flexible(
+            child: widget.findings.isEmpty
+                ? const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(32),
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Icons.verified_user, color: Color(0xFF00FF88), size: 40),
+                        SizedBox(height: 12),
+                        Text('No vulnerabilities detected',
+                            style: TextStyle(color: Colors.white70, fontSize: 14)),
+                        SizedBox(height: 6),
+                        Text('Based on open ports and known risky services.',
+                            style: TextStyle(color: Colors.white38, fontSize: 12)),
+                      ]),
+                    ),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.all(12),
+                    itemCount: shown.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1, color: Color(0xFF1A2438)),
+                    itemBuilder: (_, i) {
+                      final f = shown[i];
+                      final c = _sevColor(f.severity);
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
+                        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: c.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(color: c.withValues(alpha: 0.4)),
+                            ),
+                            child: Text(_sevLabel(f.severity),
+                                style: TextStyle(color: c, fontSize: 9,
+                                    fontWeight: FontWeight.w700)),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Row(children: [
+                                Text(f.title, style: const TextStyle(
+                                    color: Colors.white, fontSize: 12,
+                                    fontWeight: FontWeight.w600)),
+                                const SizedBox(width: 8),
+                                Text('${f.device.name}  ${f.device.ip}',
+                                    style: const TextStyle(color: Colors.white38, fontSize: 10)),
+                              ]),
+                              const SizedBox(height: 3),
+                              Text(f.detail, style: const TextStyle(
+                                  color: Color(0xFF7A96B8), fontSize: 11)),
+                            ]),
+                          ),
+                        ]),
+                      );
+                    },
+                  ),
+          ),
+          // Footer
+          Container(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+            decoration: const BoxDecoration(
+                border: Border(top: BorderSide(color: Color(0xFF1E2D45)))),
+            child: const Text(
+              'Based on open ports only. Does not exploit or confirm vulnerabilities. '
+              'Always patch and restrict firewall rules for exposed services.',
               style: TextStyle(color: Color(0xFF2A3F5F), fontSize: 10),
             ),
           ),
