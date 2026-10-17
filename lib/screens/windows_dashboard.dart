@@ -803,8 +803,11 @@ class _MonitorViewState extends State<_MonitorView> {
       if (!hasRdp && !hasSsh) portLabel = 'Telnet';
     }
 
-    // ── net user \\<ip> — local accounts ─────────────────────────────────
-    final (localUsers, netUserError) = await _queryNetUser(device.ip);
+    // ── net user \\<ip> — local accounts (Windows/RDP only) ──────────────
+    // Only attempt on Windows machines (RDP port 3389 open) — SSH/Telnet
+    // devices are not Windows and net user will just print its help text.
+    final (localUsers, netUserError) =
+        hasRdp ? await _queryNetUser(device.ip) : (<String>[], null as String?);
 
     return _RdpUserResult(
       ip: device.ip,
