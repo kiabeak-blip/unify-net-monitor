@@ -533,6 +533,95 @@ class _MonitorView extends StatefulWidget {
 
 class _MonitorViewState extends State<_MonitorView> {
   bool _showAll = false;
+  bool _rdpQuerying = false;
+
+  // Parse nbtstat -A output to extract logged-in username(s)
+  // The <03> record type = messenger service: appears for both computer name and username.
+  // Username is the <03> entry that differs from the computer name <00> entry.
+  Future<_RdpUserResult> _queryRdpUser(Device device) async {
+    try {
+      // Ping first to populate ARP so nbtstat has a chance
+      await Process.run('ping', ['-n', '1', '-w', '500', device.ip]);
+      final res = await Process.run('nbtstat', ['-A', device.ip],
+          stdoutEncoding: const SystemEncoding())
+          .timeout(const Duration(seconds: 6));
+      final out = res.stdout.toString();
+
+      // Computer name is <00> Unique entry
+      final compMatch = RegExp(
+              r'^\s*(\S+)\s+<00>\s+UNIQUE', multiLine: true, caseSensitive: false)
+          .firstMatch(out);
+      final computerName = compMatch?.group(1)?.trim().toUpperCase();
+
+      // All <03> entries — includes both computer name and logged-in username(s)
+      final userMatches = RegExp(
+              r'^\s*(\S+)\s+<03>\s+UNIQUE', multiLine: true, caseSensitive: false)
+          .allMatches(out)
+          .map((m) => m.group(1)!.trim().toUpperCase())
+          .toList();
+
+      // Username = <03> entries that are NOT the computer name
+      final usernames = userMatches
+          .where((u) => u != computerName)
+          .toList();
+
+      if (usernames.isNotEmpty) {
+        return _RdpUserResult(
+          ip: device.ip,
+          name: device.name,
+          computerName: computerName,
+          usernames: usernames,
+          error: null,
+        );
+      }
+
+      // Fallback: if no separate username found, still show computer name
+      if (computerName != null) {
+        return _RdpUserResult(
+          ip: device.ip,
+          name: device.name,
+          computerName: computerName,
+          usernames: const [],
+          error: 'No user logged in',
+        );
+      }
+
+      return _RdpUserResult(
+        ip: device.ip, name: device.name,
+        computerName: null, usernames: const [],
+        error: 'No NetBIOS response',
+      );
+    } catch (_) {
+      return _RdpUserResult(
+        ip: device.ip, name: device.name,
+        computerName: null, usernames: const [],
+        error: 'Query failed',
+      );
+    }
+  }
+
+  Future<void> _showRdpUsers(BuildContext context, List<Device> rdpDevices) async {
+    if (rdpDevices.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No devices with port 3389 open found. Run a scan first.'),
+        backgroundColor: Color(0xFF111927),
+        duration: Duration(seconds: 3),
+      ));
+      return;
+    }
+
+    setState(() => _rdpQuerying = true);
+
+    final results = await Future.wait(rdpDevices.map(_queryRdpUser));
+
+    if (!mounted) return;
+    setState(() => _rdpQuerying = false);
+
+    showDialog(
+      context: context,
+      builder: (_) => _RdpUsersDialog(results: results),
+    );
+  }
 
   Future<void> _exportCsv(List<Device> devices) async {
     final buf = StringBuffer();
@@ -589,6 +678,8 @@ class _MonitorViewState extends State<_MonitorView> {
       });
     final displayed = _showAll ? all : all.where((d) => d.status == DeviceStatus.online).toList();
     final onlineCount = all.where((d) => d.status == DeviceStatus.online).length;
+    final rdpDevices = all.where((d) =>
+        d.ports.any((p) => p.port == 3389 && p.isOpen)).toList();
 
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       _MonitorHeader(dm: dm),
@@ -605,6 +696,36 @@ class _MonitorViewState extends State<_MonitorView> {
                   emptyMsg: dm.isScanning ? 'Scanning…'
                       : 'No active devices.\nClick Scan Network to discover.',
                   trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                    // RDP username lookup
+                    InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      onTap: _rdpQuerying
+                          ? null
+                          : () => _showRdpUsers(context, rdpDevices),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF3B1F6B).withValues(alpha: 0.6),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: const Color(0xFFAB6BFF).withValues(alpha: 0.4)),
+                        ),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          if (_rdpQuerying)
+                            const SizedBox(width: 10, height: 10,
+                                child: CircularProgressIndicator(strokeWidth: 1.5,
+                                    color: Color(0xFFAB6BFF)))
+                          else
+                            const Icon(Icons.person_search,
+                                color: Color(0xFFAB6BFF), size: 13),
+                          const SizedBox(width: 5),
+                          Text(
+                            _rdpQuerying ? 'Querying…' : 'RDP Users${rdpDevices.isNotEmpty ? " (${rdpDevices.length})" : ""}',
+                            style: const TextStyle(color: Color(0xFFAB6BFF), fontSize: 11),
+                          ),
+                        ]),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
                     // Show all toggle
                     InkWell(
                       borderRadius: BorderRadius.circular(6),
@@ -944,6 +1065,173 @@ class _DeviceRow extends StatelessWidget {
         )),
       ]),
     ));
+  }
+}
+
+// ─── RDP User Result ───────────────────────────────────────────────────────
+
+class _RdpUserResult {
+  final String ip;
+  final String name;
+  final String? computerName;
+  final List<String> usernames;
+  final String? error;
+
+  const _RdpUserResult({
+    required this.ip,
+    required this.name,
+    required this.computerName,
+    required this.usernames,
+    required this.error,
+  });
+}
+
+class _RdpUsersDialog extends StatelessWidget {
+  const _RdpUsersDialog({required this.results});
+  final List<_RdpUserResult> results;
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: const Color(0xFF111927),
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: const BorderSide(color: Color(0xFF1E2D45))),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520, maxHeight: 500),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.fromLTRB(20, 16, 16, 14),
+            decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: Color(0xFF1E2D45))),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(12))),
+            child: Row(children: [
+              const Icon(Icons.person_search, color: Color(0xFFAB6BFF), size: 18),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('RDP Usernames', style: TextStyle(color: Colors.white,
+                      fontSize: 15, fontWeight: FontWeight.w700)),
+                  Text('Logged-in Windows users on port 3389 devices',
+                      style: TextStyle(color: Colors.white38, fontSize: 11)),
+                ]),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close, color: Colors.white38, size: 18),
+                onPressed: () => Navigator.pop(context),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+              ),
+            ]),
+          ),
+          // Results list
+          Flexible(
+            child: ListView.separated(
+              padding: const EdgeInsets.all(12),
+              itemCount: results.length,
+              separatorBuilder: (_, __) =>
+                  const Divider(height: 1, color: Color(0xFF1A2438)),
+              itemBuilder: (_, i) {
+                final r = results[i];
+                final hasUser = r.usernames.isNotEmpty;
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+                  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    // Status dot
+                    Container(
+                      width: 8, height: 8,
+                      margin: const EdgeInsets.only(top: 4),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: hasUser
+                            ? const Color(0xFF00FF88)
+                            : r.error != null
+                                ? const Color(0xFF6B7280)
+                                : const Color(0xFFFFAA00),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                        Row(children: [
+                          Text(r.name,
+                              style: const TextStyle(color: Colors.white,
+                                  fontSize: 13, fontWeight: FontWeight.w500)),
+                          const SizedBox(width: 8),
+                          Text(r.ip,
+                              style: const TextStyle(color: Colors.white38,
+                                  fontSize: 11, fontFamily: 'monospace')),
+                        ]),
+                        if (r.computerName != null) ...[
+                          const SizedBox(height: 3),
+                          Text('Computer: ${r.computerName}',
+                              style: const TextStyle(color: Color(0xFF7A96B8),
+                                  fontSize: 11)),
+                        ],
+                        const SizedBox(height: 4),
+                        if (hasUser)
+                          Wrap(spacing: 6, runSpacing: 4, children: [
+                            for (final u in r.usernames)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFAB6BFF).withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                      color: const Color(0xFFAB6BFF).withValues(alpha: 0.35)),
+                                ),
+                                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                  const Icon(Icons.person, color: Color(0xFFAB6BFF), size: 12),
+                                  const SizedBox(width: 5),
+                                  Text(u,
+                                      style: const TextStyle(
+                                          color: Color(0xFFAB6BFF),
+                                          fontSize: 12,
+                                          fontFamily: 'monospace',
+                                          fontWeight: FontWeight.w600)),
+                                  const SizedBox(width: 6),
+                                  InkWell(
+                                    onTap: () {
+                                      Clipboard.setData(ClipboardData(text: u));
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(content: Text('Username copied'),
+                                            duration: Duration(seconds: 2),
+                                            backgroundColor: Color(0xFF111927)));
+                                    },
+                                    child: const Icon(Icons.copy,
+                                        color: Color(0xFF4A6480), size: 12),
+                                  ),
+                                ]),
+                              ),
+                          ])
+                        else
+                          Text(r.error ?? 'No user found',
+                              style: const TextStyle(
+                                  color: Color(0xFF4A6480), fontSize: 11)),
+                      ]),
+                    ),
+                  ]),
+                );
+              },
+            ),
+          ),
+          // Footer note
+          Container(
+            padding: const EdgeInsets.fromLTRB(20, 10, 20, 14),
+            decoration: const BoxDecoration(
+                border: Border(top: BorderSide(color: Color(0xFF1E2D45)))),
+            child: const Text(
+              'Username retrieved via NetBIOS Name Table (nbtstat -A). '
+              'Only shows users actively logged in at the time of query.',
+              style: TextStyle(color: Color(0xFF2A3F5F), fontSize: 10),
+            ),
+          ),
+        ]),
+      ),
+    );
   }
 }
 
