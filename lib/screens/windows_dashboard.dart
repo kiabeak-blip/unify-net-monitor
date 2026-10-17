@@ -1073,66 +1073,284 @@ class _MonitorViewState extends State<_MonitorView> {
     );
   }
 
+  // ── Device type detection helpers ─────────────────────────────────────
+  static const _cameraKeywords = [
+    'hikvision', 'dahua', 'axis', 'bosch', 'hanwha', 'amcrest', 'reolink',
+    'foscam', 'uniview', 'vivotek', 'milesight', 'cp plus', 'provision',
+    'camera', 'cam', 'dvr', 'nvr', 'ipcam', 'cctv',
+  ];
+  static const _routerKeywords = [
+    'cisco', 'ubiquiti', 'mikrotik', 'tp-link', 'tplink', 'netgear', 'asus',
+    'linksys', 'dlink', 'd-link', 'zyxel', 'fortinet', 'juniper', 'aruba',
+    'huawei', 'router', 'gateway', 'modem', 'access point', 'unifi',
+  ];
+  static const _switchKeywords = [
+    'switch', 'sg300', 'sg500', 'catalyst', 'procurve', 'powerconnect',
+    'gs', 'tl-sg', 'tl-sl', 'smart switch',
+  ];
+
+  bool _isCamera(Device d) {
+    final s = '${d.name} ${d.manufacturer ?? ''} ${d.hostname ?? ''}'.toLowerCase();
+    return _cameraKeywords.any(s.contains) ||
+        d.ports.any((p) => (p.port == 554 || p.port == 8000 || p.port == 37777) && p.isOpen);
+  }
+
+  bool _isRouter(Device d) {
+    final s = '${d.name} ${d.manufacturer ?? ''} ${d.hostname ?? ''}'.toLowerCase();
+    return _routerKeywords.any(s.contains);
+  }
+
+  bool _isSwitch(Device d) {
+    final s = '${d.name} ${d.manufacturer ?? ''} ${d.hostname ?? ''}'.toLowerCase();
+    return _switchKeywords.any(s.contains);
+  }
+
+  // ── Active probe helpers ────────────────────────────────────────────────
+
+  // RTSP: sends OPTIONS without credentials. Returns true if server responds
+  // 200 OK (stream accessible without auth).
+  Future<bool> _rtspNoAuth(String ip, {int port = 554}) async {
+    try {
+      final sock = await Socket.connect(ip, port,
+          timeout: const Duration(seconds: 3));
+      sock.write('OPTIONS rtsp://$ip:$port/ RTSP/1.0\r\nCSeq: 1\r\n\r\n');
+      final chunks = <int>[];
+      await for (final c in sock.timeout(const Duration(seconds: 2))) {
+        chunks.addAll(c);
+        if (chunks.length > 50) break;
+      }
+      sock.destroy();
+      final resp = String.fromCharCodes(chunks);
+      return resp.startsWith('RTSP/1.0 200');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // HTTP GET: returns (statusCode, serverHeader, body100) or null on failure.
+  Future<(int, String, String)?> _httpGet(String ip, int port,
+      {String path = '/', bool https = false}) async {
+    try {
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 3)
+        ..badCertificateCallback = (_, __, ___) => true;
+      final uri = Uri.parse('${https ? "https" : "http"}://$ip:$port$path');
+      final req = await client.getUrl(uri);
+      req.headers.set('User-Agent', 'Mozilla/5.0');
+      final res = await req.close().timeout(const Duration(seconds: 3));
+      final body = await res
+          .transform(const SystemEncoding().decoder)
+          .join()
+          .timeout(const Duration(seconds: 2))
+          .catchError((_) => '');
+      final server = res.headers.value('server') ?? '';
+      client.close();
+      return (res.statusCode, server, body.length > 300 ? body.substring(0, 300) : body);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // SNMP v1 GET with community "public" on UDP 161.
+  // Returns true if the device responded (default community accepted).
+  Future<bool> _snmpPublic(String ip) async {
+    try {
+      final sock = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      sock.timeout(const Duration(seconds: 3));
+      // Minimal SNMP v1 GetRequest for sysDescr.0 (OID 1.3.6.1.2.1.1.1.0)
+      final pkt = Uint8List.fromList([
+        0x30, 0x26, // SEQUENCE
+        0x02, 0x01, 0x00, // version: 0 (SNMPv1)
+        0x04, 0x06, 0x70, 0x75, 0x62, 0x6c, 0x69, 0x63, // community: "public"
+        0xa0, 0x19, // GetRequest-PDU
+        0x02, 0x01, 0x01, // request-id: 1
+        0x02, 0x01, 0x00, // error-status: 0
+        0x02, 0x01, 0x00, // error-index: 0
+        0x30, 0x0e, // variable-bindings
+        0x30, 0x0c,
+        0x06, 0x08, 0x2b, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00, // OID sysDescr.0
+        0x05, 0x00, // null value
+      ]);
+      sock.send(pkt, InternetAddress(ip), 161);
+      bool got = false;
+      await for (final ev in sock) {
+        if (ev == RawSocketEvent.read) {
+          sock.receive();
+          got = true;
+          break;
+        }
+      }
+      sock.close();
+      return got;
+    } catch (_) {
+      return false;
+    }
+  }
+
   // ── Vulnerability scan ─────────────────────────────────────────────────
   Future<void> _runVulnScan(BuildContext context, List<Device> all) async {
     setState(() => _vulnScanning = true);
-    await Future.delayed(const Duration(milliseconds: 200)); // let UI update
+    await Future.delayed(const Duration(milliseconds: 100));
+
+    final online = all.where((d) => d.status == DeviceStatus.online).toList();
     final findings = <_VulnFinding>[];
 
-    for (final d in all) {
-      if (d.status != DeviceStatus.online) continue;
+    // Run all device checks in parallel
+    await Future.wait(online.map((d) async {
       final open = d.ports.where((p) => p.isOpen).map((p) => p.port).toSet();
+      final isCamera  = _isCamera(d);
+      final isRouter  = _isRouter(d);
+      final isSwitch  = _isSwitch(d);
 
-      void add(String title, String detail, _VulnSeverity sev) {
-        findings.add(_VulnFinding(device: d, title: title, detail: detail, severity: sev));
+      void add(String title, String detail, _VulnSeverity sev, {String? badge}) {
+        findings.add(_VulnFinding(
+          device: d, title: title, detail: detail, severity: sev,
+          badge: badge ?? (isCamera ? 'CAMERA' : isRouter ? 'ROUTER' : isSwitch ? 'SWITCH' : null),
+        ));
       }
 
-      // Critical
-      if (open.contains(23))  add('Telnet open', 'Port 23: plaintext credentials, easily intercepted', _VulnSeverity.critical);
-      if (open.contains(6379)) add('Redis exposed', 'Port 6379: Redis is often unauthenticated by default', _VulnSeverity.critical);
+      // ── Generic port-based rules (all devices) ───────────────────────
+      if (open.contains(23))   add('Telnet open', 'Port 23: plaintext credentials, trivially intercepted', _VulnSeverity.critical);
+      if (open.contains(6379)) add('Redis exposed', 'Port 6379: Redis often has no authentication by default', _VulnSeverity.critical);
       if (open.contains(27017)) add('MongoDB exposed', 'Port 27017: MongoDB may allow unauthenticated access', _VulnSeverity.critical);
-      if (open.contains(9200)) add('Elasticsearch exposed', 'Port 9200: Elasticsearch may allow unauthenticated reads', _VulnSeverity.critical);
-
-      // High
-      if (open.contains(21))  add('FTP open', 'Port 21: credentials transmitted in plaintext', _VulnSeverity.high);
-      if (open.contains(445)) add('SMB exposed', 'Port 445: SMB — risk of EternalBlue/ransomware if unpatched', _VulnSeverity.high);
-      if (open.contains(5900) || open.contains(5901)) add('VNC exposed', 'Port 590x: remote desktop with weak/no auth', _VulnSeverity.high);
-      if (open.contains(3306)) add('MySQL exposed', 'Port 3306: database directly reachable on network', _VulnSeverity.high);
-      if (open.contains(1433)) add('MSSQL exposed', 'Port 1433: SQL Server directly reachable on network', _VulnSeverity.high);
-      if (open.contains(5432)) add('PostgreSQL exposed', 'Port 5432: database directly reachable on network', _VulnSeverity.high);
-      if (open.contains(512) || open.contains(513) || open.contains(514)) {
-        add('r-services open', 'Ports 512-514: rsh/rexec/rlogin — no encryption, legacy', _VulnSeverity.high);
-      }
-
-      // Medium
+      if (open.contains(9200)) add('Elasticsearch exposed', 'Port 9200: may allow unauthenticated data reads', _VulnSeverity.critical);
+      if (open.contains(21))   add('FTP open', 'Port 21: credentials sent in plaintext', _VulnSeverity.high);
+      if (open.contains(445))  add('SMB exposed', 'Port 445: EternalBlue/ransomware risk if unpatched', _VulnSeverity.high);
+      if (open.contains(5900) || open.contains(5901)) add('VNC exposed', 'Port 590x: remote desktop, weak/no auth risk', _VulnSeverity.high);
+      if (open.contains(3306)) add('MySQL exposed', 'Port 3306: database reachable on network', _VulnSeverity.high);
+      if (open.contains(1433)) add('MSSQL exposed', 'Port 1433: SQL Server reachable on network', _VulnSeverity.high);
+      if (open.contains(5432)) add('PostgreSQL exposed', 'Port 5432: database reachable on network', _VulnSeverity.high);
       if (open.contains(3389)) add('RDP exposed', 'Port 3389: brute-force and BlueKeep risk if unpatched', _VulnSeverity.medium);
-      if (open.contains(161))  add('SNMP open', 'Port 161: may leak device info via default community "public"', _VulnSeverity.medium);
       if (open.contains(69))   add('TFTP open', 'Port 69: unauthenticated file transfer', _VulnSeverity.medium);
-      if (open.contains(135))  add('RPC open', 'Port 135: MSRPC — attack surface for old exploits', _VulnSeverity.medium);
-      if (open.contains(139))  add('NetBIOS-SSN open', 'Port 139: legacy NetBIOS over TCP/IP', _VulnSeverity.medium);
-      if (open.contains(80) && !open.contains(443)) {
-        add('HTTP only (no HTTPS)', 'Port 80 open, port 443 closed — traffic is unencrypted', _VulnSeverity.medium);
-      }
-      if (open.contains(8080) && !open.contains(443) && !open.contains(8443)) {
-        add('Alternate HTTP (8080)', 'Port 8080: unencrypted HTTP alternate port', _VulnSeverity.medium);
-      }
-
-      // Low
-      if (open.contains(80) && open.contains(443)) {
-        add('HTTP redirect check', 'Port 80 open alongside 443 — ensure HTTP redirects to HTTPS', _VulnSeverity.low);
-      }
-      if (open.contains(8888)) add('Jupyter/Dev port', 'Port 8888: commonly used by Jupyter Notebook (may be unauthenticated)', _VulnSeverity.low);
+      if (open.contains(135))  add('RPC exposed', 'Port 135: MSRPC attack surface', _VulnSeverity.medium);
+      if (open.contains(139))  add('NetBIOS open', 'Port 139: legacy NetBIOS SMB', _VulnSeverity.medium);
+      if (open.contains(80) && !open.contains(443)) add('HTTP only', 'Port 80 with no HTTPS — traffic is unencrypted', _VulnSeverity.medium);
       if (open.contains(4444) || open.contains(4445)) add('Suspicious port', 'Port 444x: often used by malware/reverse shells', _VulnSeverity.low);
-    }
 
-    // Sort: critical first, then high, medium, low
-    findings.sort((a, b) => a.severity.index.compareTo(b.severity.index));
+      // ── SNMP active probe (routers, switches, cameras) ───────────────
+      if (open.contains(161)) {
+        final snmpOpen = await _snmpPublic(d.ip);
+        if (snmpOpen) {
+          add('SNMP default community', 'Responded to SNMP "public" community — device info accessible without credentials', _VulnSeverity.high, badge: isCamera ? 'CAMERA' : isRouter ? 'ROUTER' : isSwitch ? 'SWITCH' : null);
+        } else {
+          add('SNMP port open', 'Port 161 open — verify community string is not "public" or "private"', _VulnSeverity.medium);
+        }
+      }
+
+      // ── Camera-specific checks ────────────────────────────────────────
+      if (isCamera) {
+        // RTSP unauthenticated stream
+        if (open.contains(554)) {
+          final noAuth = await _rtspNoAuth(d.ip);
+          if (noAuth) {
+            add('RTSP stream open (no auth)', 'Camera RTSP feed accessible without credentials — live video exposed', _VulnSeverity.critical, badge: 'CAMERA');
+          } else {
+            add('RTSP requires auth', 'Port 554 open, RTSP requests authentication ✓', _VulnSeverity.low, badge: 'CAMERA');
+          }
+        }
+
+        // HTTP management interface
+        for (final port in [80, 8080, 8000]) {
+          if (!open.contains(port)) continue;
+          final res = await _httpGet(d.ip, port);
+          if (res == null) continue;
+          final (code, server, body) = res;
+          final bodyL = body.toLowerCase();
+          final hasLogin = bodyL.contains('login') || bodyL.contains('password') ||
+              bodyL.contains('username') || code == 401 || code == 302;
+
+          if (code == 200 && !hasLogin) {
+            add('Camera web UI — no login', 'HTTP $port returned 200 without login page — management interface may be open', _VulnSeverity.critical, badge: 'CAMERA');
+          }
+          // Hikvision default path check
+          if (server.toLowerCase().contains('hikvision') ||
+              bodyL.contains('hikvision') || bodyL.contains('webs erver')) {
+            add('Hikvision device detected', 'Hikvision cameras (CVE-2021-36260) — update firmware immediately if version < V5.5.800', _VulnSeverity.high, badge: 'CAMERA');
+          }
+          // Dahua check
+          if (server.toLowerCase().contains('dahua') || bodyL.contains('dahua') ||
+              bodyL.contains('/RPC2') || open.contains(37777)) {
+            add('Dahua device detected', 'Dahua cameras (CVE-2021-33044/33045) — check firmware version and disable P2P if unused', _VulnSeverity.high, badge: 'CAMERA');
+          }
+        }
+
+        // Dahua SDK port
+        if (open.contains(37777)) {
+          add('Dahua SDK port open', 'Port 37777: Dahua proprietary protocol — restrict to trusted IPs', _VulnSeverity.high, badge: 'CAMERA');
+        }
+        // Hikvision SDK port
+        if (open.contains(8000)) {
+          add('Hikvision SDK port', 'Port 8000: Hikvision ISAPI/SDK — limit to trusted IPs only', _VulnSeverity.medium, badge: 'CAMERA');
+        }
+        // Telnet on camera is especially dangerous
+        if (open.contains(23)) {
+          add('Camera Telnet root shell', 'Telnet on a camera often gives unauthenticated root shell access', _VulnSeverity.critical, badge: 'CAMERA');
+        }
+      }
+
+      // ── Router/Switch-specific checks ────────────────────────────────
+      if (isRouter || isSwitch) {
+        final label = isRouter ? 'ROUTER' : 'SWITCH';
+
+        // HTTP management
+        for (final port in [80, 8080, 8443, 443]) {
+          if (!open.contains(port)) continue;
+          final https = port == 443 || port == 8443;
+          final res = await _httpGet(d.ip, port, https: https);
+          if (res == null) continue;
+          final (code, server, body) = res;
+          final bodyL = body.toLowerCase();
+
+          if (code == 200 && !bodyL.contains('login') && !bodyL.contains('password') &&
+              !bodyL.contains('username') && body.isNotEmpty) {
+            add('$label web UI — no login', 'HTTP $port returned 200 without login page — management may be unprotected', _VulnSeverity.critical, badge: label);
+          }
+          // MikroTik
+          if (bodyL.contains('mikrotik') || bodyL.contains('routeros')) {
+            if (open.contains(23)) add('MikroTik Telnet open', 'MikroTik with Telnet: disable Telnet, use SSH + strong password (CVE-2018-14847)', _VulnSeverity.critical, badge: label);
+          }
+          // Ubiquiti
+          if (bodyL.contains('ubiquiti') || bodyL.contains('unifi') || server.toLowerCase().contains('lighttpd')) {
+            if (open.contains(22)) add('Ubiquiti SSH default creds risk', 'Ubiquiti devices: verify SSH password is not default "ubnt/ubnt"', _VulnSeverity.high, badge: label);
+          }
+          // Cisco
+          if (bodyL.contains('cisco') || server.toLowerCase().contains('cisco')) {
+            add('Cisco device — verify IOS version', 'Cisco: check for CVE-2018-0171 (Smart Install) if port 4786 open', _VulnSeverity.medium, badge: label);
+          }
+        }
+
+        // Cisco Smart Install
+        if (open.contains(4786)) {
+          add('Cisco Smart Install exposed', 'Port 4786 (CVE-2018-0171): remote unauthenticated code execution — disable Smart Install', _VulnSeverity.critical, badge: label);
+        }
+        // MikroTik Winbox
+        if (open.contains(8291)) {
+          add('MikroTik Winbox exposed', 'Port 8291 (CVE-2018-14847): credential disclosure — update RouterOS, restrict access', _VulnSeverity.high, badge: label);
+        }
+        // Telnet on router
+        if (open.contains(23)) {
+          add('$label Telnet open', 'Telnet gives plaintext CLI access — disable and use SSH only', _VulnSeverity.critical, badge: label);
+        }
+        // HTTP-only management
+        if (open.contains(80) && !open.contains(443)) {
+          add('$label HTTP management (no HTTPS)', 'Management page served over HTTP — credentials visible on network', _VulnSeverity.high, badge: label);
+        }
+      }
+    }));
+
+    // Sort: critical first, then high, medium, low; deduplicate same title+ip
+    final seen = <String>{};
+    final deduped = findings.where((f) {
+      final key = '${f.device.ip}|${f.title}';
+      return seen.add(key);
+    }).toList()
+      ..sort((a, b) => a.severity.index.compareTo(b.severity.index));
 
     if (!mounted) return;
     setState(() => _vulnScanning = false);
     showDialog(
       context: context,
-      builder: (_) => _VulnScanDialog(findings: findings, total: all.where((d) => d.status == DeviceStatus.online).length),
+      builder: (_) => _VulnScanDialog(findings: deduped, total: online.length),
     );
   }
 
@@ -1993,8 +2211,9 @@ class _VulnFinding {
   final String title;
   final String detail;
   final _VulnSeverity severity;
+  final String? badge; // e.g. 'CAMERA', 'ROUTER', 'SWITCH'
   const _VulnFinding({required this.device, required this.title,
-      required this.detail, required this.severity});
+      required this.detail, required this.severity, this.badge});
 }
 
 class _VulnScanDialog extends StatefulWidget {
@@ -2008,6 +2227,7 @@ class _VulnScanDialog extends StatefulWidget {
 
 class _VulnScanDialogState extends State<_VulnScanDialog> {
   _VulnSeverity? _filter;
+  String? _badgeFilter; // 'CAMERA', 'ROUTER', 'SWITCH', or null = all
 
   Color _sevColor(_VulnSeverity s) => switch (s) {
     _VulnSeverity.critical => const Color(0xFFFF4757),
@@ -2023,11 +2243,28 @@ class _VulnScanDialogState extends State<_VulnScanDialog> {
     _VulnSeverity.low      => 'LOW',
   };
 
+  Widget _filterChip(String label, Color color, bool active, VoidCallback onTap) =>
+    GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+        margin: const EdgeInsets.only(right: 6),
+        decoration: BoxDecoration(
+          color: active ? color.withValues(alpha: 0.2) : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withValues(alpha: active ? 0.6 : 0.3)),
+        ),
+        child: Text(label,
+            style: TextStyle(color: active ? color : color.withValues(alpha: 0.6),
+                fontSize: 10, fontWeight: active ? FontWeight.w700 : FontWeight.normal)),
+      ),
+    );
+
   @override
   Widget build(BuildContext context) {
-    final shown = _filter == null
-        ? widget.findings
-        : widget.findings.where((f) => f.severity == _filter).toList();
+    var shown = widget.findings;
+    if (_filter != null) shown = shown.where((f) => f.severity == _filter).toList();
+    if (_badgeFilter != null) shown = shown.where((f) => f.badge == _badgeFilter).toList();
 
     final counts = {
       for (final s in _VulnSeverity.values)
@@ -2065,45 +2302,39 @@ class _VulnScanDialogState extends State<_VulnScanDialog> {
                   padding: EdgeInsets.zero, constraints: const BoxConstraints()),
             ]),
           ),
-          // Severity filter chips
+          // Filter chips — severity + device type
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: const BoxDecoration(
                 border: Border(bottom: BorderSide(color: Color(0xFF1E2D45)))),
-            child: Row(children: [
-              GestureDetector(
-                onTap: () => setState(() => _filter = null),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                  margin: const EdgeInsets.only(right: 6),
-                  decoration: BoxDecoration(
-                    color: _filter == null ? Colors.white.withValues(alpha: 0.1) : Colors.transparent,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.white24),
-                  ),
-                  child: Text('All (${widget.findings.length})',
-                      style: const TextStyle(color: Colors.white54, fontSize: 10)),
-                ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              // Severity row
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(children: [
+                  _filterChip('All', Colors.white54, _filter == null && _badgeFilter == null,
+                      () => setState(() { _filter = null; _badgeFilter = null; })),
+                  for (final s in _VulnSeverity.values)
+                    if (counts[s]! > 0)
+                      _filterChip('${_sevLabel(s)} (${counts[s]})', _sevColor(s), _filter == s,
+                          () => setState(() => _filter = _filter == s ? null : s)),
+                ]),
               ),
-              for (final s in _VulnSeverity.values)
-                if (counts[s]! > 0)
-                  GestureDetector(
-                    onTap: () => setState(() => _filter = _filter == s ? null : s),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                      margin: const EdgeInsets.only(right: 6),
-                      decoration: BoxDecoration(
-                        color: _filter == s
-                            ? _sevColor(s).withValues(alpha: 0.2)
-                            : Colors.transparent,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: _sevColor(s).withValues(alpha: 0.5)),
-                      ),
-                      child: Text('${_sevLabel(s)} (${counts[s]})',
-                          style: TextStyle(color: _sevColor(s), fontSize: 10,
-                              fontWeight: FontWeight.w600)),
-                    ),
-                  ),
+              // Device type row
+              const SizedBox(height: 6),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(children: [
+                  for (final badge in ['CAMERA', 'ROUTER', 'SWITCH'])
+                    if (widget.findings.any((f) => f.badge == badge))
+                      _filterChip(badge,
+                          badge == 'CAMERA' ? const Color(0xFF4ECDC4)
+                              : badge == 'ROUTER' ? const Color(0xFFFFAA00)
+                              : const Color(0xFF6B7FFF),
+                          _badgeFilter == badge,
+                          () => setState(() => _badgeFilter = _badgeFilter == badge ? null : badge)),
+                ]),
+              ),
             ]),
           ),
           // Findings list
@@ -2133,17 +2364,37 @@ class _VulnScanDialogState extends State<_VulnScanDialog> {
                       return Padding(
                         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
                         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: c.withValues(alpha: 0.15),
-                              borderRadius: BorderRadius.circular(4),
-                              border: Border.all(color: c.withValues(alpha: 0.4)),
+                          Column(children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: c.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(color: c.withValues(alpha: 0.4)),
+                              ),
+                              child: Text(_sevLabel(f.severity),
+                                  style: TextStyle(color: c, fontSize: 9,
+                                      fontWeight: FontWeight.w700)),
                             ),
-                            child: Text(_sevLabel(f.severity),
-                                style: TextStyle(color: c, fontSize: 9,
-                                    fontWeight: FontWeight.w700)),
-                          ),
+                            if (f.badge != null) ...[
+                              const SizedBox(height: 4),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF1E2D45),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(f.badge!,
+                                    style: TextStyle(
+                                        color: f.badge == 'CAMERA'
+                                            ? const Color(0xFF4ECDC4)
+                                            : f.badge == 'ROUTER'
+                                                ? const Color(0xFFFFAA00)
+                                                : const Color(0xFF6B7FFF),
+                                        fontSize: 8, fontWeight: FontWeight.w700)),
+                              ),
+                            ],
+                          ]),
                           const SizedBox(width: 10),
                           Expanded(
                             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -2171,8 +2422,8 @@ class _VulnScanDialogState extends State<_VulnScanDialog> {
             decoration: const BoxDecoration(
                 border: Border(top: BorderSide(color: Color(0xFF1E2D45)))),
             child: const Text(
-              'Based on open ports only. Does not exploit or confirm vulnerabilities. '
-              'Always patch and restrict firewall rules for exposed services.',
+              'Combines port-based rules with active probes (RTSP auth, SNMP community, HTTP login). '
+              'Does not exploit. Patch devices and restrict firewall access for flagged services.',
               style: TextStyle(color: Color(0xFF2A3F5F), fontSize: 10),
             ),
           ),
