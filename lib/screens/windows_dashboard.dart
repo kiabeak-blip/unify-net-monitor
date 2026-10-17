@@ -614,18 +614,24 @@ class _MonitorViewState extends State<_MonitorView> {
       if (offset >= data.length) return {};
 
       // RDATA: NUM_NAMES (1 byte) then 18-byte entries
+      // Each entry: 15-byte name + 1-byte type + 2-byte flags
+      // Flags bit 15 (high byte bit 7 = 0x80): 1 = group name, 0 = unique name
       final numNames = data[offset++];
       final result = <String, int>{};
       for (int i = 0; i < numNames && offset + 18 <= data.length; i++) {
-        // 15-byte name (padded with spaces/nulls) + 1-byte type + 2-byte flags
         final rawName = data.sublist(offset, offset + 15)
-            .where((b) => b >= 0x21 && b <= 0x7E) // printable ASCII only
+            .where((b) => b >= 0x21 && b <= 0x7E)
             .map(String.fromCharCode)
             .join()
             .trim();
         final type = data[offset + 15];
+        final flagsHi = data[offset + 16]; // high byte of 2-byte flags field
+        final isGroup = (flagsHi & 0x80) != 0;
         offset += 18;
-        if (rawName.isNotEmpty) result[rawName] = type;
+        if (rawName.isNotEmpty) {
+          // Encode group flag in high bit of stored value so callers can filter
+          result[rawName] = isGroup ? (type | 0x100) : type;
+        }
       }
       return result;
     } catch (_) {
@@ -651,12 +657,13 @@ class _MonitorViewState extends State<_MonitorView> {
       // Method 1: raw NBNS UDP to port 137 — no admin rights needed
       final nbns = await _rawNbns(device.ip);
       if (nbns.isNotEmpty) {
-        // Computer name = type 0x00 entry
+        // Computer name = unique (not group) type 0x00 entry
+        // Group names (workgroup) have 0x100 bit set — skip them
         computerName = nbns.entries
-            .where((e) => e.value == 0x00)
+            .where((e) => e.value == 0x00) // unique type-00
             .map((e) => e.key)
             .firstOrNull;
-        // Logged-in username = type 0x03 entry that isn't the computer name
+        // Logged-in username = unique type 0x03 entry that isn't the computer name
         final u03 = nbns.entries
             .where((e) => e.value == 0x03 && e.key != computerName)
             .map((e) => e.key)
@@ -797,7 +804,7 @@ class _MonitorViewState extends State<_MonitorView> {
     }
 
     // ── net user \\<ip> — local accounts ─────────────────────────────────
-    final localUsers = await _queryNetUser(device.ip);
+    final (localUsers, netUserError) = await _queryNetUser(device.ip);
 
     return _RdpUserResult(
       ip: device.ip,
@@ -808,25 +815,25 @@ class _MonitorViewState extends State<_MonitorView> {
       banner: banner,
       portLabel: portLabel,
       error: usernames.isEmpty && banner == null && localUsers.isEmpty
-          ? (error ?? 'No info retrieved')
+          ? (error ?? netUserError ?? 'No info retrieved')
           : null,
     );
   }
 
-  Future<List<String>> _queryNetUser(String ip) async {
+  // Returns (users, errorNote)
+  Future<(List<String>, String?)> _queryNetUser(String ip) async {
     try {
       final result = await Process.run(
         'net',
         ['user', r'\\' + ip],
         runInShell: true,
-      ).timeout(const Duration(seconds: 6));
-      final out = result.stdout as String;
-      // Output format:
-      //   User accounts for \\<ip>
-      //   ---------------------
-      //   Administrator   Guest   DefaultAccount ...
-      //   ...
-      //   The command completed successfully.
+        stdoutEncoding: const SystemEncoding(),
+        stderrEncoding: const SystemEncoding(),
+      ).timeout(const Duration(seconds: 8));
+      final out = (result.stdout as String?) ?? '';
+      final err = (result.stderr as String?) ?? '';
+
+      // Parse stdout table
       final lines = out.split('\n');
       final users = <String>[];
       bool inAccounts = false;
@@ -835,12 +842,17 @@ class _MonitorViewState extends State<_MonitorView> {
         if (t.startsWith('---')) { inAccounts = true; continue; }
         if (!inAccounts) continue;
         if (t.isEmpty || t.startsWith('The command')) break;
-        // Each line can have multiple space-separated usernames
         users.addAll(t.split(RegExp(r'\s{2,}')).map((s) => s.trim()).where((s) => s.isNotEmpty));
       }
-      return users;
+      if (users.isNotEmpty) return (users, null as String?);
+
+      // Surface a short error from stderr if no users found
+      final errLine = err.split('\n')
+          .map((l) => l.trim())
+          .firstWhere((l) => l.isNotEmpty, orElse: () => '');
+      return (<String>[], errLine.isNotEmpty ? 'net user: $errLine' : null);
     } catch (_) {
-      return [];
+      return (<String>[], null);
     }
   }
 
