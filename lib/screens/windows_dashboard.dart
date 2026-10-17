@@ -590,10 +590,14 @@ class _MonitorViewState extends State<_MonitorView> {
       for (int i = 0; i < numNames; i++) {
         final base = offset62 + 1 + i * 18;
         if (base + 18 > data.length) break;
-        final rawName = String.fromCharCodes(
-            data.sublist(base, base + 15)).trimRight().trim();
+        // Filter to printable ASCII only — NetBIOS names are padded with nulls/spaces
+        final rawName = data.sublist(base, base + 15)
+            .where((b) => b >= 0x21 && b <= 0x7E)
+            .map(String.fromCharCode)
+            .join()
+            .trim();
         final type = data[base + 15];
-        result[rawName] = type;
+        if (rawName.isNotEmpty) result[rawName] = type;
       }
       return result;
     } catch (_) {
@@ -681,7 +685,7 @@ class _MonitorViewState extends State<_MonitorView> {
       }
 
       if (usernames.isEmpty) {
-        error = computerName != null
+        error = computerName != null && computerName!.isNotEmpty
             ? 'No user currently logged in to $computerName'
             : 'No NetBIOS response — check firewall or NetBIOS over TCP/IP setting';
       }
