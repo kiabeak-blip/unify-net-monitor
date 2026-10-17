@@ -578,25 +578,53 @@ class _MonitorViewState extends State<_MonitorView> {
 
       final dg = await completer.future;
       sock.close();
-      if (dg == null || dg.data.length < 62) return {};
+      if (dg == null || dg.data.length < 12) return {};
 
       final data = dg.data;
-      // Response layout: Header(12) + QuestionName(34) + QType+Class(4)
-      //   + RR Name(2) + Type(2) + Class(2) + TTL(4) + RDLen(2) = offset 62
-      final offset62 = 62;
-      if (offset62 >= data.length) return {};
-      final numNames = data[offset62];
+      // Parse dynamically — offset varies by Windows version / implementation
+      int offset = 12; // skip 12-byte header
+
+      // Skip question section (QDCOUNT from header bytes 4-5)
+      final qdcount = (data[4] << 8) | data[5];
+      for (int q = 0; q < qdcount && offset < data.length; q++) {
+        // Skip QNAME: label sequence ends with null byte, or 2-byte compressed ptr
+        while (offset < data.length) {
+          final len = data[offset];
+          if (len == 0) { offset++; break; }
+          if ((len & 0xC0) == 0xC0) { offset += 2; break; }
+          offset += 1 + len;
+        }
+        offset += 4; // QTYPE + QCLASS
+      }
+
+      // Check there is at least one answer (ANCOUNT bytes 6-7)
+      final ancount = (data[6] << 8) | data[7];
+      if (ancount == 0 || offset >= data.length) return {};
+
+      // Skip answer RR NAME (same label/pointer format as above)
+      while (offset < data.length) {
+        final len = data[offset];
+        if (len == 0) { offset++; break; }
+        if ((len & 0xC0) == 0xC0) { offset += 2; break; }
+        offset += 1 + len;
+      }
+
+      // Skip TYPE(2) + CLASS(2) + TTL(4) + RDLENGTH(2) = 10 bytes
+      offset += 10;
+      if (offset >= data.length) return {};
+
+      // RDATA: NUM_NAMES (1 byte) then 18-byte entries
+      final numNames = data[offset++];
       final result = <String, int>{};
-      for (int i = 0; i < numNames; i++) {
-        final base = offset62 + 1 + i * 18;
-        if (base + 18 > data.length) break;
-        // Filter to printable ASCII only — NetBIOS names are padded with nulls/spaces
-        final rawName = data.sublist(base, base + 15)
-            .where((b) => b >= 0x21 && b <= 0x7E)
+      for (int i = 0; i < numNames && offset + 18 <= data.length; i++) {
+        // 15-byte name (padded with spaces/nulls) + 1-byte type + 2-byte flags
+        final rawName = data.sublist(offset, offset + 15)
+            .where((b) => b >= 0x21 && b <= 0x7E) // printable ASCII only
             .map(String.fromCharCode)
             .join()
             .trim();
-        final type = data[base + 15];
+        final type = data[offset + 15];
+        offset += 18;
         if (rawName.isNotEmpty) result[rawName] = type;
       }
       return result;
