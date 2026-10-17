@@ -812,6 +812,7 @@ class _MonitorViewState extends State<_MonitorView> {
       computerName: computerName,
       usernames: usernames,
       localUsers: localUsers,
+      netUserError: netUserError,
       banner: banner,
       portLabel: portLabel,
       error: usernames.isEmpty && banner == null && localUsers.isEmpty
@@ -822,6 +823,7 @@ class _MonitorViewState extends State<_MonitorView> {
 
   // Returns (users, errorNote)
   Future<(List<String>, String?)> _queryNetUser(String ip) async {
+    // Method 1: net user \\<ip>
     try {
       final result = await Process.run(
         'net',
@@ -829,11 +831,10 @@ class _MonitorViewState extends State<_MonitorView> {
         runInShell: true,
         stdoutEncoding: const SystemEncoding(),
         stderrEncoding: const SystemEncoding(),
-      ).timeout(const Duration(seconds: 8));
+      ).timeout(const Duration(seconds: 6));
       final out = (result.stdout as String?) ?? '';
       final err = (result.stderr as String?) ?? '';
 
-      // Parse stdout table
       final lines = out.split('\n');
       final users = <String>[];
       bool inAccounts = false;
@@ -846,11 +847,36 @@ class _MonitorViewState extends State<_MonitorView> {
       }
       if (users.isNotEmpty) return (users, null as String?);
 
-      // Surface a short error from stderr if no users found
-      final errLine = err.split('\n')
-          .map((l) => l.trim())
+      // Capture the error for display
+      final errLine = err.split('\n').map((l) => l.trim())
           .firstWhere((l) => l.isNotEmpty, orElse: () => '');
-      return (<String>[], errLine.isNotEmpty ? 'net user: $errLine' : null);
+      final netErr = errLine.isNotEmpty ? errLine : null;
+
+      // Method 2: wmic /node:<ip> useraccount list brief
+      try {
+        final wmic = await Process.run(
+          'wmic',
+          ['/node:$ip', 'useraccount', 'list', 'brief'],
+          runInShell: true,
+          stdoutEncoding: const SystemEncoding(),
+          stderrEncoding: const SystemEncoding(),
+        ).timeout(const Duration(seconds: 6));
+        final wmicOut = (wmic.stdout as String?) ?? '';
+        // Columns: AccountType  Description  Domain  FullName  Name  SID
+        final wmicUsers = <String>[];
+        for (final line in wmicOut.split('\n').skip(1)) {
+          final cols = line.trim().split(RegExp(r'\s{2,}'));
+          if (cols.length >= 5) {
+            final name = cols[4].trim();
+            if (name.isNotEmpty && name.toLowerCase() != 'name') {
+              wmicUsers.add(name);
+            }
+          }
+        }
+        if (wmicUsers.isNotEmpty) return (wmicUsers, null as String?);
+      } catch (_) {}
+
+      return (<String>[], netErr != null ? 'net user: $netErr' : null);
     } catch (_) {
       return (<String>[], null);
     }
@@ -1345,6 +1371,7 @@ class _RdpUserResult {
   final String? computerName;
   final List<String> usernames;
   final List<String> localUsers;
+  final String? netUserError;
   final String? banner;
   final String portLabel;
   final String? error;
@@ -1355,6 +1382,7 @@ class _RdpUserResult {
     required this.computerName,
     required this.usernames,
     this.localUsers = const [],
+    this.netUserError,
     this.banner,
     this.portLabel = 'RDP',
     required this.error,
@@ -1555,7 +1583,15 @@ class _RdpUsersDialog extends StatelessWidget {
                         if (!hasUser && r.banner == null && r.localUsers.isEmpty)
                           Text(r.error ?? 'No info retrieved',
                               style: const TextStyle(
-                                  color: Color(0xFF4A6480), fontSize: 11)),
+                                  color: Color(0xFF4A6480), fontSize: 11))
+                        else if (r.localUsers.isEmpty && r.netUserError != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(r.netUserError!,
+                                style: const TextStyle(
+                                    color: Color(0xFF2A5A58), fontSize: 10,
+                                    fontFamily: 'monospace')),
+                          ),
                       ]),
                     ),
                   ]),
