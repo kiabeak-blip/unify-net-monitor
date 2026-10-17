@@ -535,6 +535,8 @@ class _MonitorView extends StatefulWidget {
 class _MonitorViewState extends State<_MonitorView> {
   bool _showAll = false;
   bool _rdpQuerying = false;
+  String? _rdpUser;
+  String? _rdpPass;
 
   // ── Raw NBNS UDP Node Status query (port 137) ────────────────────────────
   // Does NOT require admin rights. Works when NetBIOS over TCP/IP is enabled.
@@ -671,16 +673,40 @@ class _MonitorViewState extends State<_MonitorView> {
         usernames.addAll(u03);
       }
 
-      // Method 2: query session /server — needs admin but try anyway
+      // Method 2: wmic computersystem get username (works in same workgroup)
       if (usernames.isEmpty) {
         try {
-          final res = await Process.run(
-              'query', ['session', '/server:${device.ip}'],
+          final wmicArgs = _rdpUser != null && _rdpPass != null
+              ? ['/node:${device.ip}', '/user:$_rdpUser', '/password:$_rdpPass',
+                 'computersystem', 'get', 'username']
+              : ['/node:${device.ip}', 'computersystem', 'get', 'username'];
+          final res = await Process.run('wmic', wmicArgs,
+              stdoutEncoding: const SystemEncoding(),
+              stderrEncoding: const SystemEncoding())
+              .timeout(const Duration(seconds: 8));
+          final out = res.stdout.toString();
+          for (final line in out.split('\n').skip(1)) {
+            final u = line.trim();
+            // Output: "DOMAIN\username" or just "username"
+            if (u.isNotEmpty && !u.toLowerCase().startsWith('username')) {
+              final shortUser = u.contains(r'\') ? u.split(r'\').last : u;
+              if (shortUser.isNotEmpty) usernames.add(shortUser);
+            }
+          }
+        } catch (_) {}
+      }
+
+      // Method 3: query session /server — needs admin rights on remote
+      if (usernames.isEmpty) {
+        try {
+          final qArgs = _rdpUser != null && _rdpPass != null
+              ? ['session', '/server:${device.ip}']
+              : ['session', '/server:${device.ip}'];
+          final res = await Process.run('query', qArgs,
               stdoutEncoding: const SystemEncoding(),
               stderrEncoding: const SystemEncoding())
               .timeout(const Duration(seconds: 6));
           final out = res.stdout.toString();
-          // Match Active sessions: ">? sessionName  username  ID  Active"
           for (final line in out.split('\n')) {
             final m = RegExp(
                     r'^\s*>?\s*\S+\s{2,}(\S+)\s+\d+\s+Active',
@@ -696,7 +722,7 @@ class _MonitorViewState extends State<_MonitorView> {
         } catch (_) {}
       }
 
-      // Method 3: nbtstat -A fallback (works on older Windows)
+      // Method 4: nbtstat -A fallback (older Windows / Messenger service)
       if (usernames.isEmpty) {
         try {
           final res = await Process.run('nbtstat', ['-A', device.ip],
@@ -721,7 +747,7 @@ class _MonitorViewState extends State<_MonitorView> {
 
       if (usernames.isEmpty) {
         error = computerName != null && computerName!.isNotEmpty
-            ? 'No user currently logged in to $computerName'
+            ? 'No user detected on $computerName (admin rights may be needed)'
             : 'No NetBIOS response — check firewall or NetBIOS over TCP/IP setting';
       }
     }
@@ -910,6 +936,12 @@ class _MonitorViewState extends State<_MonitorView> {
       return;
     }
 
+    // Ask for optional Windows credentials to authenticate wmic/net user
+    final creds = await _askWindowsCreds(context);
+    if (creds == null) return; // cancelled
+    _rdpUser = creds.$1.isEmpty ? null : creds.$1;
+    _rdpPass = creds.$2.isEmpty ? null : creds.$2;
+
     setState(() => _rdpQuerying = true);
     final results = await Future.wait(targets.map(_queryDevice));
     if (!mounted) return;
@@ -918,6 +950,70 @@ class _MonitorViewState extends State<_MonitorView> {
     showDialog(
       context: context,
       builder: (_) => _RdpUsersDialog(results: results),
+    );
+  }
+
+  Future<(String, String)?> _askWindowsCreds(BuildContext context) async {
+    final userCtrl = TextEditingController(text: _rdpUser ?? '');
+    final passCtrl = TextEditingController(text: _rdpPass ?? '');
+    return showDialog<(String, String)>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF111927),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: const BorderSide(color: Color(0xFF1E2D45))),
+        title: const Row(children: [
+          Icon(Icons.lock_open, color: Color(0xFFAB6BFF), size: 18),
+          SizedBox(width: 8),
+          Text('Windows Credentials',
+              style: TextStyle(color: Colors.white, fontSize: 15)),
+        ]),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text(
+            'Optional: provide admin credentials to query logged-in users via wmic.\n'
+            'Leave blank to try without credentials.',
+            style: TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: userCtrl,
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+            decoration: const InputDecoration(
+              labelText: 'Username (e.g. Administrator)',
+              labelStyle: TextStyle(color: Colors.white38, fontSize: 12),
+              enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Color(0xFF1E2D45))),
+              focusedBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Color(0xFFAB6BFF))),
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: passCtrl,
+            obscureText: true,
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+            decoration: const InputDecoration(
+              labelText: 'Password',
+              labelStyle: TextStyle(color: Colors.white38, fontSize: 12),
+              enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Color(0xFF1E2D45))),
+              focusedBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Color(0xFFAB6BFF))),
+            ),
+          ),
+        ]),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Colors.white38)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, (userCtrl.text, passCtrl.text)),
+            child: const Text('Query', style: TextStyle(color: Color(0xFFAB6BFF))),
+          ),
+        ],
+      ),
     );
   }
 
