@@ -535,75 +535,188 @@ class _MonitorViewState extends State<_MonitorView> {
   bool _showAll = false;
   bool _rdpQuerying = false;
 
-  // Parse nbtstat -A output to extract logged-in username(s)
-  // The <03> record type = messenger service: appears for both computer name and username.
-  // Username is the <03> entry that differs from the computer name <00> entry.
-  Future<_RdpUserResult> _queryRdpUser(Device device) async {
-    try {
-      // Ping first to populate ARP so nbtstat has a chance
-      await Process.run('ping', ['-n', '1', '-w', '500', device.ip]);
-      final res = await Process.run('nbtstat', ['-A', device.ip],
-          stdoutEncoding: const SystemEncoding())
-          .timeout(const Duration(seconds: 6));
-      final out = res.stdout.toString();
+  // ── RDP (3389): query session list via qwinsta, fallback nbtstat ──────────
+  Future<_RdpUserResult> _queryDevice(Device device) async {
+    final openPorts = device.ports.where((p) => p.isOpen).map((p) => p.port).toSet();
+    final hasRdp = openPorts.contains(3389);
+    final hasSsh = openPorts.contains(22);
+    final hasTelnet = openPorts.contains(23);
 
-      // Computer name is <00> Unique entry
-      final compMatch = RegExp(
-              r'^\s*(\S+)\s+<00>\s+UNIQUE', multiLine: true, caseSensitive: false)
-          .firstMatch(out);
-      final computerName = compMatch?.group(1)?.trim().toUpperCase();
+    String? computerName;
+    final usernames = <String>[];
+    String? banner;
+    String? error;
+    String portLabel = hasRdp ? 'RDP' : hasSsh ? 'SSH' : 'Telnet';
 
-      // All <03> entries — includes both computer name and logged-in username(s)
-      final userMatches = RegExp(
-              r'^\s*(\S+)\s+<03>\s+UNIQUE', multiLine: true, caseSensitive: false)
-          .allMatches(out)
-          .map((m) => m.group(1)!.trim().toUpperCase())
-          .toList();
+    // ── RDP: qwinsta /server — reads active RDP sessions directly ────────
+    if (hasRdp) {
+      try {
+        final res = await Process.run(
+            'query', ['session', '/server:${device.ip}'],
+            stdoutEncoding: const SystemEncoding())
+            .timeout(const Duration(seconds: 8));
+        final out = res.stdout.toString();
+        // Each line: " SESSIONNAME  USERNAME  ID  STATE ..."
+        // Username column is 2nd field; skip header and empty/system sessions
+        for (final line in out.split('\n')) {
+          final parts = line.trim().split(RegExp(r'\s{2,}'));
+          if (parts.length >= 3) {
+            final user = parts[1].trim();
+            if (user.isNotEmpty &&
+                !user.toUpperCase().contains('USERNAME') &&
+                user != 'services' &&
+                user != 'console') {
+              usernames.add(user);
+            }
+          }
+        }
+      } catch (_) {}
 
-      // Username = <03> entries that are NOT the computer name
-      final usernames = userMatches
-          .where((u) => u != computerName)
-          .toList();
-
-      if (usernames.isNotEmpty) {
-        return _RdpUserResult(
-          ip: device.ip,
-          name: device.name,
-          computerName: computerName,
-          usernames: usernames,
-          error: null,
-        );
+      // Fallback to nbtstat <03> if qwinsta found nothing
+      if (usernames.isEmpty) {
+        try {
+          await Process.run('ping', ['-n', '1', '-w', '500', device.ip]);
+          final res = await Process.run('nbtstat', ['-A', device.ip],
+              stdoutEncoding: const SystemEncoding())
+              .timeout(const Duration(seconds: 6));
+          final out = res.stdout.toString();
+          final compMatch = RegExp(
+                  r'^\s*(\S+)\s+<00>\s+UNIQUE', multiLine: true, caseSensitive: false)
+              .firstMatch(out);
+          computerName = compMatch?.group(1)?.trim().toUpperCase();
+          final u03 = RegExp(
+                  r'^\s*(\S+)\s+<03>\s+UNIQUE', multiLine: true, caseSensitive: false)
+              .allMatches(out)
+              .map((m) => m.group(1)!.trim().toUpperCase())
+              .where((u) => u != computerName)
+              .toList();
+          usernames.addAll(u03);
+        } catch (_) {}
       }
 
-      // Fallback: if no separate username found, still show computer name
-      if (computerName != null) {
-        return _RdpUserResult(
-          ip: device.ip,
-          name: device.name,
-          computerName: computerName,
-          usernames: const [],
-          error: 'No user logged in',
-        );
+      // Get computer name via nbtstat if still missing
+      if (computerName == null) {
+        try {
+          final res = await Process.run('nbtstat', ['-A', device.ip],
+              stdoutEncoding: const SystemEncoding())
+              .timeout(const Duration(seconds: 4));
+          final compMatch = RegExp(
+                  r'^\s*(\S+)\s+<00>\s+UNIQUE', multiLine: true, caseSensitive: false)
+              .firstMatch(res.stdout.toString());
+          computerName = compMatch?.group(1)?.trim().toUpperCase();
+        } catch (_) {}
       }
 
-      return _RdpUserResult(
-        ip: device.ip, name: device.name,
-        computerName: null, usernames: const [],
-        error: 'No NetBIOS response',
-      );
-    } catch (_) {
-      return _RdpUserResult(
-        ip: device.ip, name: device.name,
-        computerName: null, usernames: const [],
-        error: 'Query failed',
-      );
+      if (usernames.isEmpty) error = 'No active session found';
     }
+
+    // ── SSH (22): read server banner ──────────────────────────────────────
+    if (hasSsh) {
+      try {
+        final sock = await Socket.connect(device.ip, 22,
+            timeout: const Duration(seconds: 3));
+        final buf = StringBuffer();
+        final done = Completer<void>();
+        late StreamSubscription sub;
+        sub = sock.listen((data) {
+          buf.write(String.fromCharCodes(data));
+          if (!done.isCompleted) done.complete();
+        },
+            onDone: () { if (!done.isCompleted) done.complete(); },
+            onError: (_) { if (!done.isCompleted) done.complete(); });
+        await done.future.timeout(const Duration(seconds: 2), onTimeout: () {});
+        await sub.cancel();
+        await sock.close();
+        final raw = buf.toString().trim();
+        // SSH banner format: SSH-2.0-OpenSSH_9.0p1 Ubuntu-3ubuntu0.1
+        if (raw.startsWith('SSH-')) {
+          banner = raw.split('\n').first.trim();
+          // Extract OS hint from banner
+          final osHint = _parseSshOs(banner);
+          if (osHint != null && usernames.isEmpty) usernames.add(osHint);
+        }
+        if (banner == null || banner!.isEmpty) error = 'No SSH banner returned';
+      } catch (_) {
+        error = 'SSH connection failed';
+      }
+      portLabel = hasRdp ? portLabel : 'SSH';
+    }
+
+    // ── Telnet (23): read login banner ────────────────────────────────────
+    if (hasTelnet) {
+      try {
+        final sock = await Socket.connect(device.ip, 23,
+            timeout: const Duration(seconds: 3));
+        final buf = <int>[];
+        final done = Completer<void>();
+        Timer(const Duration(seconds: 2), () { if (!done.isCompleted) done.complete(); });
+        late StreamSubscription sub;
+        sub = sock.listen((data) {
+          buf.addAll(data);
+          if (buf.length > 512 && !done.isCompleted) done.complete();
+        },
+            onDone: () { if (!done.isCompleted) done.complete(); },
+            onError: (_) { if (!done.isCompleted) done.complete(); });
+        await done.future;
+        await sub.cancel();
+        await sock.close();
+        // Strip telnet IAC control bytes (0xFF and the two following bytes)
+        final cleaned = <int>[];
+        int skip = 0;
+        for (final b in buf) {
+          if (skip > 0) { skip--; continue; }
+          if (b == 0xFF) { skip = 2; continue; }
+          if (b >= 32 && b < 127) cleaned.add(b);
+        }
+        final raw = String.fromCharCodes(cleaned).trim();
+        if (raw.isNotEmpty) {
+          banner = raw.length > 200 ? raw.substring(0, 200) : raw;
+          // Try to extract hostname from "hostname login:" pattern
+          final hostMatch = RegExp(r'^(\S+)\s+(login|User Access)',
+                  caseSensitive: false)
+              .firstMatch(raw);
+          if (hostMatch != null && computerName == null) {
+            computerName = hostMatch.group(1);
+          }
+        } else {
+          error = 'Empty telnet banner';
+        }
+      } catch (_) {
+        if (!hasSsh && !hasRdp) error = 'Telnet connection failed';
+      }
+      if (!hasRdp && !hasSsh) portLabel = 'Telnet';
+    }
+
+    return _RdpUserResult(
+      ip: device.ip,
+      name: device.name,
+      computerName: computerName,
+      usernames: usernames,
+      banner: banner,
+      portLabel: portLabel,
+      error: usernames.isEmpty && banner == null ? (error ?? 'No info retrieved') : null,
+    );
   }
 
-  Future<void> _showRdpUsers(BuildContext context, List<Device> rdpDevices) async {
-    if (rdpDevices.isEmpty) {
+  String? _parseSshOs(String banner) {
+    final b = banner.toLowerCase();
+    if (b.contains('ubuntu')) return 'Ubuntu Linux';
+    if (b.contains('debian')) return 'Debian Linux';
+    if (b.contains('centos')) return 'CentOS Linux';
+    if (b.contains('fedora')) return 'Fedora Linux';
+    if (b.contains('raspbian') || b.contains('raspberry')) return 'Raspberry Pi';
+    if (b.contains('windows')) return 'Windows (OpenSSH)';
+    if (b.contains('freebsd')) return 'FreeBSD';
+    if (b.contains('openbsd')) return 'OpenBSD';
+    if (b.contains('cisco')) return 'Cisco IOS';
+    if (b.contains('fortinet') || b.contains('fortigate')) return 'Fortinet';
+    return null;
+  }
+
+  Future<void> _showUserInfo(BuildContext context, List<Device> targets) async {
+    if (targets.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('No devices with port 3389 open found. Run a scan first.'),
+        content: Text('No devices with port 22, 23, or 3389 open. Run a scan first.'),
         backgroundColor: Color(0xFF111927),
         duration: Duration(seconds: 3),
       ));
@@ -611,9 +724,7 @@ class _MonitorViewState extends State<_MonitorView> {
     }
 
     setState(() => _rdpQuerying = true);
-
-    final results = await Future.wait(rdpDevices.map(_queryRdpUser));
-
+    final results = await Future.wait(targets.map(_queryDevice));
     if (!mounted) return;
     setState(() => _rdpQuerying = false);
 
@@ -679,7 +790,7 @@ class _MonitorViewState extends State<_MonitorView> {
     final displayed = _showAll ? all : all.where((d) => d.status == DeviceStatus.online).toList();
     final onlineCount = all.where((d) => d.status == DeviceStatus.online).length;
     final rdpDevices = all.where((d) =>
-        d.ports.any((p) => p.port == 3389 && p.isOpen)).toList();
+        d.ports.any((p) => (p.port == 3389 || p.port == 22 || p.port == 23) && p.isOpen)).toList();
 
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       _MonitorHeader(dm: dm),
@@ -701,7 +812,7 @@ class _MonitorViewState extends State<_MonitorView> {
                       borderRadius: BorderRadius.circular(6),
                       onTap: _rdpQuerying
                           ? null
-                          : () => _showRdpUsers(context, rdpDevices),
+                          : () => _showUserInfo(context, rdpDevices),
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                         decoration: BoxDecoration(
@@ -719,7 +830,7 @@ class _MonitorViewState extends State<_MonitorView> {
                                 color: Color(0xFFAB6BFF), size: 13),
                           const SizedBox(width: 5),
                           Text(
-                            _rdpQuerying ? 'Querying…' : 'RDP Users${rdpDevices.isNotEmpty ? " (${rdpDevices.length})" : ""}',
+                            _rdpQuerying ? 'Querying…' : 'Users / Banners${rdpDevices.isNotEmpty ? " (${rdpDevices.length})" : ""}',
                             style: const TextStyle(color: Color(0xFFAB6BFF), fontSize: 11),
                           ),
                         ]),
@@ -1075,6 +1186,8 @@ class _RdpUserResult {
   final String name;
   final String? computerName;
   final List<String> usernames;
+  final String? banner;
+  final String portLabel;
   final String? error;
 
   const _RdpUserResult({
@@ -1082,6 +1195,8 @@ class _RdpUserResult {
     required this.name,
     required this.computerName,
     required this.usernames,
+    this.banner,
+    this.portLabel = 'RDP',
     required this.error,
   });
 }
@@ -1163,6 +1278,17 @@ class _RdpUsersDialog extends StatelessWidget {
                           Text(r.ip,
                               style: const TextStyle(color: Colors.white38,
                                   fontSize: 11, fontFamily: 'monospace')),
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1E2D45),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(r.portLabel,
+                                style: const TextStyle(color: Color(0xFF4A6480),
+                                    fontSize: 9, fontWeight: FontWeight.w700)),
+                          ),
                         ]),
                         if (r.computerName != null) ...[
                           const SizedBox(height: 3),
@@ -1170,7 +1296,7 @@ class _RdpUsersDialog extends StatelessWidget {
                               style: const TextStyle(color: Color(0xFF7A96B8),
                                   fontSize: 11)),
                         ],
-                        const SizedBox(height: 4),
+                        const SizedBox(height: 6),
                         if (hasUser)
                           Wrap(spacing: 6, runSpacing: 4, children: [
                             for (final u in r.usernames)
@@ -1206,9 +1332,24 @@ class _RdpUsersDialog extends StatelessWidget {
                                   ),
                                 ]),
                               ),
-                          ])
-                        else
-                          Text(r.error ?? 'No user found',
+                          ]),
+                        if (r.banner != null) ...[
+                          if (hasUser) const SizedBox(height: 6),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF0D1321),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: const Color(0xFF1E2D45)),
+                            ),
+                            child: Text(r.banner!,
+                                style: const TextStyle(color: Color(0xFF7A96B8),
+                                    fontSize: 10, fontFamily: 'monospace')),
+                          ),
+                        ],
+                        if (!hasUser && r.banner == null)
+                          Text(r.error ?? 'No info retrieved',
                               style: const TextStyle(
                                   color: Color(0xFF4A6480), fontSize: 11)),
                       ]),
@@ -1224,8 +1365,8 @@ class _RdpUsersDialog extends StatelessWidget {
             decoration: const BoxDecoration(
                 border: Border(top: BorderSide(color: Color(0xFF1E2D45)))),
             child: const Text(
-              'Username retrieved via NetBIOS Name Table (nbtstat -A). '
-              'Only shows users actively logged in at the time of query.',
+              'RDP: uses query session (qwinsta) then nbtstat fallback. '
+              'SSH: reads server version banner. Telnet: reads login prompt.',
               style: TextStyle(color: Color(0xFF2A3F5F), fontSize: 10),
             ),
           ),
