@@ -2572,7 +2572,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   @override
   void initState() {
     super.initState();
-    // Start in idle — user must click Install Now
+    WidgetsBinding.instance.addPostFrameCallback((_) => _download());
   }
 
   Future<void> _download() async {
@@ -2739,7 +2739,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
               ]),
               const SizedBox(height: 6),
               if (!_uacTimeout)
-                const Text('Minimizing windows so the installer is visible...',
+                const Text('A UAC permission prompt will appear — click Yes to continue.',
                     style: TextStyle(color: Colors.white38, fontSize: 11))
               else ...[
                 const Text('A permission prompt (UAC) is waiting for your approval.',
