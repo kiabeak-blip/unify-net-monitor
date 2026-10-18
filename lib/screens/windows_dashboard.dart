@@ -215,7 +215,7 @@ class _SidebarState extends State<_Sidebar> {
   void _showUpdateDialog(BuildContext context, UpdateInfo info) {
     showDialog(
       context: context,
-      barrierDismissible: false,
+      barrierDismissible: true,
       builder: (_) => _UpdateDialog(
         info: info,
         ignoreCount: _ignoreCount,
@@ -2572,8 +2572,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   @override
   void initState() {
     super.initState();
-    // Always auto-start download — no waiting for user click
-    WidgetsBinding.instance.addPostFrameCallback((_) => _download());
+    // Start in idle — user must click Install Now
   }
 
   Future<void> _download() async {
@@ -2591,10 +2590,6 @@ class _UpdateDialogState extends State<_UpdateDialog> {
         return;
       }
       setState(() { _phase = _Phase.installing; _uacTimeout = false; });
-
-      // Minimize all windows so the UAC prompt is visible on top
-      await Process.run('powershell', ['-NoProfile', '-Command',
-        '(New-Object -ComObject Shell.Application).MinimizeAll()'], runInShell: false);
 
       await UpdateService.runInstaller(path);
 
