@@ -79,9 +79,26 @@ class _SshScreenState extends State<SshScreen> {
     super.dispose();
   }
 
+  static String _stripAnsi(String text) {
+    // Remove all ANSI/VT escape sequences (colors, cursor movement, bracketed paste, etc.)
+    return text
+        .replaceAll(RegExp(r'\x1B\[[0-9;?]*[a-zA-Z]'), '')
+        .replaceAll(RegExp(r'\x1B[()][AB012]'), '')
+        .replaceAll(RegExp(r'\x1B[=>]'), '')
+        .replaceAll(RegExp(r'\x0D'), '') // bare carriage return
+        .replaceAll(RegExp(r'\x07'), ''); // bell
+  }
+
   void _appendLine(String text, {_LineType type = _LineType.output}) {
     if (!mounted) return;
-    setState(() => _lines.add(_TermLine(text, type)));
+    final clean = _stripAnsi(text);
+    // Split on newlines so each logical line is its own entry
+    final parts = clean.split('\n');
+    setState(() {
+      for (final part in parts) {
+        if (part.isNotEmpty) _lines.add(_TermLine(part, type));
+      }
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollCtrl.hasClients) {
         _scrollCtrl.animateTo(
@@ -334,20 +351,70 @@ class _SshScreenState extends State<SshScreen> {
 
   // ── Terminal ───────────────────────────────────────────────────────────────
 
+  void _copyAll() {
+    final text = _lines.map((l) => l.text).join('\n');
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Terminal output copied to clipboard'),
+        duration: Duration(seconds: 2),
+        backgroundColor: Color(0xFF1A2235),
+      ),
+    );
+  }
+
+  Future<void> _pasteToInput() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (data?.text != null) {
+      final pos = _cmdCtrl.selection.isValid
+          ? _cmdCtrl.selection.baseOffset
+          : _cmdCtrl.text.length;
+      final before = _cmdCtrl.text.substring(0, pos);
+      final after = _cmdCtrl.text.substring(pos);
+      _cmdCtrl.text = before + data!.text! + after;
+      _cmdCtrl.selection = TextSelection.collapsed(
+          offset: pos + data.text!.length);
+    }
+  }
+
   Widget _buildTerminal() {
     return Column(
       children: [
+        // Toolbar
+        Container(
+          color: const Color(0xFF0D1117),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          child: Row(
+            children: [
+              const Spacer(),
+              _ToolbarBtn(
+                icon: Icons.content_copy,
+                label: 'Copy All',
+                onTap: _copyAll,
+              ),
+              const SizedBox(width: 8),
+              _ToolbarBtn(
+                icon: Icons.delete_sweep_outlined,
+                label: 'Clear',
+                onTap: () => setState(() => _lines.clear()),
+              ),
+            ],
+          ),
+        ),
+
         // Output area
         Expanded(
           child: GestureDetector(
             onTap: () => _cmdFocus.requestFocus(),
             child: Container(
               color: const Color(0xFF050A0F),
-              child: ListView.builder(
-                controller: _scrollCtrl,
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-                itemCount: _lines.length,
-                itemBuilder: (_, i) => _TermLineWidget(line: _lines[i]),
+              child: SelectionArea(
+                child: ListView.builder(
+                  controller: _scrollCtrl,
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                  itemCount: _lines.length,
+                  itemBuilder: (_, i) => _TermLineWidget(line: _lines[i]),
+                ),
               ),
             ),
           ),
@@ -376,7 +443,7 @@ class _SshScreenState extends State<SshScreen> {
                       fontSize: 13),
                   decoration: const InputDecoration(
                     border: InputBorder.none,
-                    hintText: 'Type a command…',
+                    hintText: 'Type a command…  (Ctrl+V to paste)',
                     hintStyle: TextStyle(
                         color: Colors.white24, fontFamily: 'monospace'),
                     isDense: true,
@@ -386,7 +453,24 @@ class _SshScreenState extends State<SshScreen> {
                   textInputAction: TextInputAction.send,
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 4),
+              // Paste button
+              Tooltip(
+                message: 'Paste (Ctrl+V)',
+                child: GestureDetector(
+                  onTap: _pasteToInput,
+                  child: Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF00FF88).withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Icon(Icons.content_paste,
+                        color: Color(0xFF00FF88), size: 16),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 4),
               GestureDetector(
                 onTap: () => _sendCommand(_cmdCtrl.text.trim()),
                 child: Container(
@@ -452,6 +536,42 @@ class _TermLineWidget extends StatelessWidget {
             fontFamily: 'monospace',
             fontSize: 12.5,
             height: 1.5),
+      ),
+    );
+  }
+}
+
+// ── Toolbar button ────────────────────────────────────────────────────────────
+
+class _ToolbarBtn extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  const _ToolbarBtn({required this.icon, required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.05),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: Colors.white12),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 13, color: Colors.white54),
+            const SizedBox(width: 5),
+            Text(label,
+                style: const TextStyle(
+                    color: Colors.white54,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500)),
+          ],
+        ),
       ),
     );
   }
