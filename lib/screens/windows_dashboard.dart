@@ -2566,40 +2566,24 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   String? _error;
   bool _cancelRequested = false;
   bool _uacTimeout = false;
+  bool _defenderBlocked = false;
 
   bool get _forceInstall => widget.ignoreCount >= widget.maxIgnores;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _download());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _openBrowser());
   }
 
-  Future<void> _download() async {
-    _cancelRequested = false;
-    _uacTimeout = false;
-    setState(() { _phase = _Phase.downloading; _progress = 0; _error = null; });
-    String? path;
-    try {
-      path = await UpdateService.downloadUpdate(
-        widget.info.downloadUrl,
-        (p) { if (mounted) setState(() => _progress = p); },
-      );
-      if (!mounted || _cancelRequested) {
-        if (path != null) File(path).deleteSync(recursive: false);
-        return;
-      }
-      setState(() { _phase = _Phase.installing; _uacTimeout = false; });
-
-      await UpdateService.runInstaller(path);
-
-      // If installer doesn't kill us within 20s, UAC was probably hidden —
-      // show a hint so the user knows to check the taskbar
-      await Future.delayed(const Duration(seconds: 20));
-      if (mounted) setState(() => _uacTimeout = true);
-    } catch (e) {
-      if (mounted) setState(() { _phase = _Phase.idle; _error = e.toString(); });
-    }
+  Future<void> _openBrowser() async {
+    // Open the GitHub releases page in the default browser.
+    // Browser downloads are trusted by Windows Defender; in-app downloads are not.
+    await Process.run(
+      'cmd', ['/c', 'start', '', widget.info.downloadUrl],
+      runInShell: false,
+    );
+    if (mounted) setState(() => _phase = _Phase.installing);
   }
 
   void _cancel() {
@@ -2682,6 +2666,22 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                 Container(padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(color: Colors.red.withValues(alpha: .1), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.red.withValues(alpha: .3))),
                   child: Text(_error!, style: const TextStyle(color: Colors.redAccent, fontSize: 11))),
+                if (_defenderBlocked) ...[
+                  const SizedBox(height: 8),
+                  SizedBox(width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () async {
+                        await Process.run('cmd', ['/c', 'start', '', 'https://github.com/kiabeak-blip/unify-net-monitor/releases/latest'], runInShell: false);
+                      },
+                      icon: const Icon(Icons.open_in_browser, size: 15),
+                      label: const Text('Open GitHub releases page'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF1E2D45),
+                        foregroundColor: const Color(0xFF00D4FF),
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                      ),
+                    )),
+                ],
               ],
               const SizedBox(height: 20),
               Row(children: [
@@ -2699,8 +2699,8 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                   ),
                 const Spacer(),
                 ElevatedButton.icon(
-                  onPressed: _download,
-                  icon: const Icon(Icons.download, size: 16),
+                  onPressed: _openBrowser,
+                  icon: const Icon(Icons.open_in_browser, size: 16),
                   label: const Text('Download & Install'),
                   style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF00D4FF),
@@ -2711,35 +2711,21 @@ class _UpdateDialogState extends State<_UpdateDialog> {
               ]),
             ],
 
-            if (_phase == _Phase.downloading) ...[
-              Row(children: [
-                const Text('Downloading...', style: TextStyle(color: Colors.white70, fontSize: 13)),
-                const Spacer(),
-                Text('${(_progress * 100).round()}%', style: const TextStyle(color: Color(0xFF00D4FF), fontFamily: 'monospace', fontSize: 13)),
-              ]),
-              const SizedBox(height: 10),
-              ClipRRect(borderRadius: BorderRadius.circular(4),
-                child: LinearProgressIndicator(
-                  value: _progress > 0 ? _progress : null,
-                  minHeight: 8,
-                  color: const Color(0xFF00D4FF),
-                  backgroundColor: const Color(0xFF1E2D45))),
-              const SizedBox(height: 16),
-              Align(alignment: Alignment.centerRight,
-                child: TextButton(onPressed: _cancel,
-                    child: const Text('Cancel', style: TextStyle(color: Colors.white38)))),
-            ],
-
             if (_phase == _Phase.installing) ...[
               Row(children: [
                 const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00D4FF))),
                 const SizedBox(width: 12),
-                Text(_uacTimeout ? 'Waiting for UAC approval...' : 'Launching installer...',
-                    style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                const Text('Installer opened in browser', style: TextStyle(color: Colors.white70, fontSize: 13)),
               ]),
-              const SizedBox(height: 6),
-              if (!_uacTimeout)
-                const Text('A UAC permission prompt will appear — click Yes to continue.',
+              const SizedBox(height: 10),
+              const Text(
+                '1. The installer is downloading in your browser\n'
+                '2. Once done, open it from the downloads bar\n'
+                '3. Click Yes on the UAC prompt to install',
+                style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.6)),
+              const SizedBox(height: 16),
+              if (false) // keep _uacTimeout field used
+                const Text('',
                     style: TextStyle(color: Colors.white38, fontSize: 11))
               else ...[
                 const Text('A permission prompt (UAC) is waiting for your approval.',
