@@ -2573,17 +2573,40 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _openBrowser());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _download());
   }
 
-  Future<void> _openBrowser() async {
-    // Open the GitHub releases page in the default browser.
-    // Browser downloads are trusted by Windows Defender; in-app downloads are not.
-    await Process.run(
-      'cmd', ['/c', 'start', '', widget.info.downloadUrl],
-      runInShell: false,
-    );
-    if (mounted) setState(() => _phase = _Phase.installing);
+  Future<void> _download() async {
+    _cancelRequested = false;
+    _uacTimeout = false;
+    setState(() { _phase = _Phase.downloading; _progress = 0; _error = null; _defenderBlocked = false; });
+    String? path;
+    try {
+      path = await UpdateService.downloadUpdate(
+        widget.info.downloadUrl,
+        (p) { if (mounted) setState(() => _progress = p); },
+      );
+      if (!mounted || _cancelRequested) {
+        if (path != null) File(path).deleteSync(recursive: false);
+        return;
+      }
+      setState(() { _phase = _Phase.installing; _uacTimeout = false; });
+      await UpdateService.runInstaller(path);
+      await Future.delayed(const Duration(seconds: 20));
+      if (mounted) setState(() => _uacTimeout = true);
+    } catch (e) {
+      final msg = e.toString();
+      final isDefender = msg.toLowerCase().contains('virus') ||
+          msg.toLowerCase().contains('unwanted') ||
+          msg.toLowerCase().contains('access is denied');
+      if (mounted) setState(() {
+        _phase = _Phase.idle;
+        _error = isDefender
+            ? 'Windows Defender blocked the download.\nTemporarily disable real-time protection and try again.'
+            : msg;
+        _defenderBlocked = isDefender;
+      });
+    }
   }
 
   void _cancel() {
@@ -2699,8 +2722,8 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                   ),
                 const Spacer(),
                 ElevatedButton.icon(
-                  onPressed: _openBrowser,
-                  icon: const Icon(Icons.open_in_browser, size: 16),
+                  onPressed: _download,
+                  icon: const Icon(Icons.download, size: 16),
                   label: const Text('Download & Install'),
                   style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF00D4FF),
@@ -2711,21 +2734,35 @@ class _UpdateDialogState extends State<_UpdateDialog> {
               ]),
             ],
 
+            if (_phase == _Phase.downloading) ...[
+              Row(children: [
+                const Text('Downloading...', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                const Spacer(),
+                Text('${(_progress * 100).round()}%', style: const TextStyle(color: Color(0xFF00D4FF), fontFamily: 'monospace', fontSize: 13)),
+              ]),
+              const SizedBox(height: 10),
+              ClipRRect(borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: _progress > 0 ? _progress : null,
+                  minHeight: 8,
+                  color: const Color(0xFF00D4FF),
+                  backgroundColor: const Color(0xFF1E2D45))),
+              const SizedBox(height: 16),
+              Align(alignment: Alignment.centerRight,
+                child: TextButton(onPressed: _cancel,
+                    child: const Text('Cancel', style: TextStyle(color: Colors.white38)))),
+            ],
+
             if (_phase == _Phase.installing) ...[
               Row(children: [
                 const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00D4FF))),
                 const SizedBox(width: 12),
-                const Text('Installer opened in browser', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                Text(_uacTimeout ? 'Waiting for UAC approval...' : 'Launching installer...',
+                    style: const TextStyle(color: Colors.white70, fontSize: 13)),
               ]),
-              const SizedBox(height: 10),
-              const Text(
-                '1. The installer is downloading in your browser\n'
-                '2. Once done, open it from the downloads bar\n'
-                '3. Click Yes on the UAC prompt to install',
-                style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.6)),
-              const SizedBox(height: 16),
-              if (false) // keep _uacTimeout field used
-                const Text('',
+              const SizedBox(height: 6),
+              if (!_uacTimeout)
+                const Text('Click Yes on the UAC prompt to complete the install.',
                     style: TextStyle(color: Colors.white38, fontSize: 11))
               else ...[
                 const Text('A permission prompt (UAC) is waiting for your approval.',
