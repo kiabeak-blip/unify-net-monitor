@@ -167,7 +167,8 @@ class _State extends State<NetBiosScannerScreen> {
     if (hostname.isEmpty && mac.isEmpty) return null;
     final source = hostname.isNotEmpty && mac.isNotEmpty ? 'DNS + ARP'
         : hostname.isNotEmpty ? 'DNS' : 'ARP';
-    return _NetBiosResult(ip: ip, hostname: hostname, mac: mac, entries: [], source: source);
+    final vendor = mac.isNotEmpty ? (NetworkScanner.lookupManufacturer(mac) ?? '') : '';
+    return _NetBiosResult(ip: ip, hostname: hostname, mac: mac, entries: [], source: source, vendor: vendor);
   }
 
   _NetBiosResult _parseNbtstat(String ip, List<String> lines) {
@@ -190,7 +191,8 @@ class _State extends State<NetBiosScannerScreen> {
         entries.add(_NbtEntry(name: name, code: hex, type: type, status: status));
       }
     }
-    return _NetBiosResult(ip: ip, hostname: hostname, mac: macAddr, entries: entries);
+    final vendor = macAddr.isNotEmpty ? (NetworkScanner.lookupManufacturer(macAddr) ?? '') : '';
+    return _NetBiosResult(ip: ip, hostname: hostname, mac: macAddr, entries: entries, vendor: vendor);
   }
 
   String _codeDesc(int code) {
@@ -327,7 +329,7 @@ class _State extends State<NetBiosScannerScreen> {
                       const Icon(Icons.computer, color: Color(0xFF00D4FF), size: 15),
                       const SizedBox(width: 8),
                       Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Text(r.hostname.isNotEmpty ? r.hostname : '(unknown)', style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+                        Text(r.hostname.isNotEmpty ? r.hostname : r.vendor.isNotEmpty ? r.vendor : '(unknown)', style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
                         Row(children: [
                           Text(r.ip, style: const TextStyle(color: Colors.white38, fontFamily: 'monospace', fontSize: 11)),
                           const SizedBox(width: 6),
@@ -402,7 +404,8 @@ class _NetBiosResult {
   final String ip, hostname, mac;
   final List<_NbtEntry> entries;
   final String source; // 'NetBIOS', 'DNS', 'ARP'
-  const _NetBiosResult({required this.ip, required this.hostname, required this.mac, required this.entries, this.source = 'NetBIOS'});
+  final String vendor;
+  const _NetBiosResult({required this.ip, required this.hostname, required this.mac, required this.entries, this.source = 'NetBIOS', this.vendor = ''});
 }
 
 class _NbtEntry {
