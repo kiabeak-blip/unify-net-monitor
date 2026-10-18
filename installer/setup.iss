@@ -3,7 +3,7 @@
 ; Run: iscc setup.iss
 
 #define AppName      "Unify Net Monitor"
-#define AppVersion   "1.6.8"
+#define AppVersion   "1.6.9"
 #define AppPublisher "Unify Technologies"
 #define AppExeName   "network_monitor.exe"
 #define AppId        "{{8B3F2C4A-9D7E-4F1B-A6C5-2E8D0B1F3A7C}"
@@ -77,6 +77,29 @@ begin
        ewWaitUntilTerminated, ResultCode);
   // Always return True — even if the app wasn't running, proceed with install
   Result := True;
+end;
+
+// ── Add Windows Defender exclusions after install ──────────────────────────
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+  TempPath: String;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    // Exclude the installed app process from real-time scanning
+    Exec('powershell.exe',
+      '-NoProfile -NonInteractive -WindowStyle Hidden -Command ' +
+      '"Add-MpPreference -ExclusionProcess ''network_monitor.exe'' -ErrorAction SilentlyContinue"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+    // Exclude the temp update download path so auto-update isn't blocked
+    TempPath := ExpandConstant('{%TEMP}');
+    Exec('powershell.exe',
+      '-NoProfile -NonInteractive -WindowStyle Hidden -Command ' +
+      '"Add-MpPreference -ExclusionPath ''' + TempPath + '\UnifyNetMonitor_Update_*.exe'' -ErrorAction SilentlyContinue"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
 end;
 
 // ── Welcome page: show trial info ──────────────────────────────────────────
