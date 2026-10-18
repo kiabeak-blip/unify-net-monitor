@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../services/network_scanner.dart';
 
 class NetBiosScannerScreen extends StatefulWidget {
   const NetBiosScannerScreen({super.key});
@@ -311,7 +313,13 @@ class _State extends State<NetBiosScannerScreen> {
               itemCount: _results.length,
               itemBuilder: (_, i) {
                 final r = _results[i];
-                return Container(
+                return InkWell(
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: () => showDialog(
+                    context: context,
+                    builder: (_) => _NetBiosDetailDialog(result: r),
+                  ),
+                  child: Container(
                   margin: const EdgeInsets.only(bottom: 8),
                   decoration: BoxDecoration(color: const Color(0xFF0D1321), borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFF1E2D45))),
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -369,8 +377,19 @@ class _State extends State<NetBiosScannerScreen> {
                             child: Text(e.status, style: TextStyle(color: e.status.toLowerCase() == 'registered' ? const Color(0xFF00FF88) : Colors.white38, fontSize: 9))),
                         ]))),
                     ],
+                    // Tap hint
+                    const Divider(height: 1, color: Color(0xFF1E2D45)),
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                      child: Row(children: [
+                        Icon(Icons.touch_app, size: 11, color: Colors.white24),
+                        SizedBox(width: 5),
+                        Text('Tap for full details — ports, vendor, HTTP, DNS',
+                            style: TextStyle(color: Colors.white24, fontSize: 10)),
+                      ]),
+                    ),
                   ]),
-                );
+                  )); // end InkWell + Container
               },
             )),
         ]),
@@ -390,4 +409,366 @@ class _NbtEntry {
   final String name, type, status;
   final int code;
   const _NbtEntry({required this.name, required this.code, required this.type, required this.status});
+}
+
+// ─── Detail Dialog ──────────────────────────────────────────────────────────
+
+class _NetBiosDetailDialog extends StatefulWidget {
+  const _NetBiosDetailDialog({required this.result});
+  final _NetBiosResult result;
+
+  @override
+  State<_NetBiosDetailDialog> createState() => _NetBiosDetailDialogState();
+}
+
+class _NetBiosDetailDialogState extends State<_NetBiosDetailDialog> {
+  bool _loading = true;
+  String? _vendor;
+  String? _dns;
+  int? _pingMs;
+  String? _httpBanner;   // from port 80
+  String? _httpsBanner;  // from port 443
+  String? _sshBanner;
+  String? _nbnsName;     // from raw NBNS UDP
+  List<int> _openPorts = [];
+
+  static const _commonPorts = [
+    21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 161, 443, 445, 554,
+    3306, 3389, 5900, 8080, 8443, 8000, 37777,
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _probe();
+  }
+
+  Future<void> _probe() async {
+    final ip = widget.result.ip;
+
+    await Future.wait([
+      _probePing(ip),
+      _probeDns(ip),
+      _probeVendor(),
+      _probePorts(ip),
+      _probeNbns(ip),
+    ]);
+
+    if (mounted) setState(() => _loading = false);
+  }
+
+  Future<void> _probePing(String ip) async {
+    try {
+      final sw = Stopwatch()..start();
+      final res = await Process.run('ping', ['-n', '1', '-w', '1000', ip])
+          .timeout(const Duration(seconds: 2));
+      sw.stop();
+      if (res.exitCode == 0 && mounted) {
+        // Try to parse actual RTT from ping output
+        final m = RegExp(r'time[=<](\d+)ms', caseSensitive: false)
+            .firstMatch(res.stdout.toString());
+        final ms = m != null ? int.tryParse(m.group(1)!) : sw.elapsedMilliseconds;
+        if (mounted) setState(() => _pingMs = ms);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _probeDns(String ip) async {
+    try {
+      final res = await Process.run('nslookup', [ip])
+          .timeout(const Duration(seconds: 3));
+      final out = res.stdout.toString();
+      for (final line in out.split('\n')) {
+        final l = line.trim().toLowerCase();
+        if (l.startsWith('name:')) {
+          final name = line.trim().substring(5).trim();
+          if (mounted) setState(() => _dns = name);
+          break;
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _probeVendor() async {
+    final mac = widget.result.mac;
+    if (mac.isEmpty) return;
+    final v = NetworkScanner.lookupManufacturer(mac);
+    if (v != null && mounted) setState(() => _vendor = v);
+  }
+
+  Future<void> _probePorts(String ip) async {
+    final open = <int>[];
+    await Future.wait(_commonPorts.map((port) async {
+      try {
+        final sock = await Socket.connect(ip, port,
+            timeout: const Duration(milliseconds: 800));
+        open.add(port);
+
+        // Grab banners while socket is open
+        if (port == 80 || port == 8080) {
+          try {
+            sock.write('GET / HTTP/1.0\r\nHost: $ip\r\n\r\n');
+            final data = await sock.first.timeout(const Duration(seconds: 1));
+            final s = String.fromCharCodes(data.where((b) => b >= 32 && b < 127));
+            final m = RegExp(r'Server:\s*(.+)', caseSensitive: false).firstMatch(s);
+            if (m != null && mounted) setState(() => _httpBanner = m.group(1)!.trim());
+          } catch (_) {}
+        }
+        if (port == 443 || port == 8443) {
+          if (mounted) setState(() => _httpsBanner = 'HTTPS available');
+        }
+        if (port == 22) {
+          try {
+            final data = await sock.first.timeout(const Duration(seconds: 1));
+            final s = String.fromCharCodes(data.where((b) => b >= 32 && b < 127)).trim();
+            if (s.isNotEmpty && mounted) setState(() => _sshBanner = s);
+          } catch (_) {}
+        }
+        await sock.close();
+      } catch (_) {}
+    }));
+    open.sort();
+    if (mounted) setState(() => _openPorts = open);
+  }
+
+  Future<void> _probeNbns(String ip) async {
+    // Raw NBNS Node Status UDP query
+    try {
+      final sock = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      final pkt = Uint8List.fromList([
+        0xAB, 0xCD, 0x00, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x20, 0x43, 0x4B,
+        0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,
+        0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,
+        0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,
+        0x41,0x41,0x41,0x41,0x41,0x41,
+        0x00, 0x00, 0x21, 0x00, 0x01,
+      ]);
+      sock.send(pkt, InternetAddress(ip), 137);
+      String? name;
+      await sock.timeout(const Duration(seconds: 2)).firstWhere((e) {
+        if (e != RawSocketEvent.read) return false;
+        final dg = sock.receive();
+        if (dg == null || dg.data.length < 12) return false;
+        final data = dg.data;
+        int offset = 12;
+        final qdcount = (data[4] << 8) | data[5];
+        for (int q = 0; q < qdcount && offset < data.length; q++) {
+          while (offset < data.length) {
+            final len = data[offset];
+            if (len == 0) { offset++; break; }
+            if ((len & 0xC0) == 0xC0) { offset += 2; break; }
+            offset += 1 + len;
+          }
+          offset += 4;
+        }
+        if ((data[6] << 8 | data[7]) == 0) return true;
+        while (offset < data.length) {
+          final len = data[offset];
+          if (len == 0) { offset++; break; }
+          if ((len & 0xC0) == 0xC0) { offset += 2; break; }
+          offset += 1 + len;
+        }
+        offset += 10; // TYPE+CLASS+TTL+RDLEN
+        if (offset >= data.length) return true;
+        final numNames = data[offset++];
+        for (int i = 0; i < numNames && offset + 18 <= data.length; i++) {
+          final rawName = data.sublist(offset, offset + 15)
+              .where((b) => b >= 0x21 && b <= 0x7E)
+              .map(String.fromCharCode).join().trim();
+          final type = data[offset + 15];
+          final flagsHi = data[offset + 16];
+          final isGroup = (flagsHi & 0x80) != 0;
+          offset += 18;
+          if (rawName.isNotEmpty && type == 0x00 && !isGroup) { name = rawName; break; }
+        }
+        return true;
+      }).catchError((_) {});
+      sock.close();
+      if (name != null && mounted) setState(() => _nbnsName = name);
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final r = widget.result;
+    final displayName = _nbnsName ?? (r.hostname.isNotEmpty ? r.hostname : null);
+
+    return Dialog(
+      backgroundColor: const Color(0xFF0D1321),
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: const BorderSide(color: Color(0xFF1E2D45))),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 500, maxHeight: 580),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          // ── Header ──
+          Container(
+            padding: const EdgeInsets.fromLTRB(20, 16, 16, 14),
+            decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: Color(0xFF1E2D45))),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(14))),
+            child: Row(children: [
+              const Icon(Icons.computer, color: Color(0xFF00D4FF), size: 20),
+              const SizedBox(width: 10),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(displayName ?? '(unknown)',
+                    style: const TextStyle(color: Colors.white, fontSize: 15,
+                        fontWeight: FontWeight.w700)),
+                Text(r.ip, style: const TextStyle(color: Colors.white38,
+                    fontFamily: 'monospace', fontSize: 12)),
+              ])),
+              if (_loading)
+                const SizedBox(width: 18, height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 1.5,
+                        color: Color(0xFF00D4FF))),
+              const SizedBox(width: 8),
+              IconButton(icon: const Icon(Icons.close, color: Colors.white38, size: 18),
+                  onPressed: () => Navigator.pop(context),
+                  padding: EdgeInsets.zero, constraints: const BoxConstraints()),
+            ]),
+          ),
+          // ── Body ──
+          Flexible(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                // Identity
+                _section('Identity', [
+                  _row('IP Address', r.ip),
+                  if (displayName != null) _row('Hostname / Name', displayName),
+                  if (_dns != null && _dns != displayName) _row('DNS Reverse', _dns!),
+                  if (r.mac.isNotEmpty) _row('MAC Address', r.mac),
+                  if (_vendor != null) _row('Vendor', _vendor!),
+                  _row('Discovery', r.source),
+                ]),
+                const SizedBox(height: 14),
+                // Connectivity
+                _section('Connectivity', [
+                  _row('Ping', _loading && _pingMs == null
+                      ? 'measuring…'
+                      : _pingMs != null ? '$_pingMs ms' : 'no response'),
+                  if (_sshBanner != null) _row('SSH Banner', _sshBanner!),
+                  if (_httpBanner != null) _row('HTTP Server', _httpBanner!),
+                  if (_httpsBanner != null) _row('HTTPS', _httpsBanner!),
+                ]),
+                const SizedBox(height: 14),
+                // Open ports
+                _section('Open Ports', []),
+                if (_loading && _openPorts.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(left: 4, top: 4),
+                    child: Text('Probing common ports…',
+                        style: TextStyle(color: Colors.white38, fontSize: 12)),
+                  )
+                else if (_openPorts.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(left: 4, top: 4),
+                    child: Text('No common ports open',
+                        style: TextStyle(color: Colors.white38, fontSize: 12)),
+                  )
+                else
+                  Wrap(spacing: 6, runSpacing: 6, children: [
+                    for (final p in _openPorts)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF00D4FF).withValues(alpha: 0.10),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: const Color(0xFF00D4FF).withValues(alpha: 0.30)),
+                        ),
+                        child: Text('$p  ${_portName(p)}',
+                            style: const TextStyle(color: Color(0xFF00D4FF),
+                                fontSize: 11, fontFamily: 'monospace')),
+                      ),
+                  ]),
+                // NetBIOS entries
+                if (r.entries.isNotEmpty) ...[
+                  const SizedBox(height: 14),
+                  _section('NetBIOS Name Table', []),
+                  const SizedBox(height: 6),
+                  for (final e in r.entries)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Row(children: [
+                        SizedBox(width: 40, child: Text(
+                            '0x${e.code.toRadixString(16).padLeft(2, '0').toUpperCase()}',
+                            style: const TextStyle(color: Color(0xFF00D4FF),
+                                fontFamily: 'monospace', fontSize: 10))),
+                        SizedBox(width: 120, child: Text(e.name,
+                            style: const TextStyle(color: Colors.white,
+                                fontFamily: 'monospace', fontSize: 11),
+                            overflow: TextOverflow.ellipsis)),
+                        Expanded(child: Text(_nbtDesc(e.code),
+                            style: const TextStyle(color: Colors.white38, fontSize: 10))),
+                        Text(e.type,
+                            style: const TextStyle(color: Colors.white24, fontSize: 9)),
+                      ]),
+                    ),
+                ],
+              ]),
+            ),
+          ),
+          // Footer
+          Container(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+            decoration: const BoxDecoration(
+                border: Border(top: BorderSide(color: Color(0xFF1E2D45)))),
+            child: Row(children: [
+              Expanded(child: Text(
+                  _loading ? 'Probing ports and services…' : 'Scan complete',
+                  style: const TextStyle(color: Colors.white24, fontSize: 10))),
+              TextButton(
+                onPressed: () => Clipboard.setData(ClipboardData(
+                    text: '${r.ip}\t${displayName ?? ""}\t${r.mac}\t${_vendor ?? ""}'
+                        '\t${_openPorts.join(",")}')),
+                child: const Text('Copy', style: TextStyle(color: Color(0xFF00D4FF), fontSize: 12)),
+              ),
+            ]),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _section(String title, List<Widget> rows) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(title, style: const TextStyle(color: Color(0xFF00D4FF),
+          fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
+      const SizedBox(height: 6),
+      ...rows,
+    ],
+  );
+
+  Widget _row(String label, String value) => Padding(
+    padding: const EdgeInsets.only(bottom: 5),
+    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      SizedBox(width: 130, child: Text(label,
+          style: const TextStyle(color: Colors.white38, fontSize: 11))),
+      Expanded(child: Text(value,
+          style: const TextStyle(color: Colors.white, fontSize: 11,
+              fontFamily: 'monospace'))),
+    ]),
+  );
+
+  String _portName(int p) => const {
+    21: 'FTP', 22: 'SSH', 23: 'Telnet', 25: 'SMTP', 53: 'DNS',
+    80: 'HTTP', 110: 'POP3', 135: 'RPC', 139: 'NetBIOS', 143: 'IMAP',
+    161: 'SNMP', 443: 'HTTPS', 445: 'SMB', 554: 'RTSP',
+    3306: 'MySQL', 3389: 'RDP', 5900: 'VNC', 8080: 'HTTP-alt',
+    8443: 'HTTPS-alt', 8000: 'HTTP-dev', 37777: 'Dahua',
+  }[p] ?? '';
+
+  String _nbtDesc(int code) => const {
+    0x00: 'Workstation / Computer name',
+    0x03: 'Messenger (logged-in user)',
+    0x06: 'RAS Server',
+    0x1B: 'Domain Master Browser',
+    0x1C: 'Domain Controller',
+    0x1D: 'Master Browser',
+    0x1E: 'Browser Elections',
+    0x20: 'File Server',
+    0x21: 'RAS Client',
+  }[code] ?? '0x${code.toRadixString(16).padLeft(2, '0').toUpperCase()}';
 }
