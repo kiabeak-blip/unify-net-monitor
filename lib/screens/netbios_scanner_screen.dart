@@ -140,7 +140,17 @@ class _State extends State<NetBiosScannerScreen> {
     String hostname = '';
     String mac = '';
 
-    // DNS reverse lookup
+    // ARP cache lookup first (needed for MAC before OUI lookup)
+    try {
+      final res = await Process.run('arp', ['-a', ip], runInShell: false)
+          .timeout(const Duration(seconds: 2));
+      final out = res.stdout.toString();
+      final m = RegExp(r'([0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2})',
+          caseSensitive: false).firstMatch(out);
+      if (m != null) mac = m.group(1)!.toUpperCase().replaceAll('-', ':');
+    } catch (_) {}
+
+    // DNS reverse lookup via nslookup
     try {
       final res = await Process.run('nslookup', [ip], runInShell: false)
           .timeout(const Duration(seconds: 3));
@@ -154,15 +164,20 @@ class _State extends State<NetBiosScannerScreen> {
       }
     } catch (_) {}
 
-    // ARP cache lookup
-    try {
-      final res = await Process.run('arp', ['-a', ip], runInShell: false)
-          .timeout(const Duration(seconds: 2));
-      final out = res.stdout.toString();
-      final m = RegExp(r'([0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2})',
-          caseSensitive: false).firstMatch(out);
-      if (m != null) mac = m.group(1)!.toUpperCase().replaceAll('-', ':');
-    } catch (_) {}
+    // ping -a resolves NetBIOS/mDNS hostnames that nslookup misses
+    if (hostname.isEmpty) {
+      try {
+        final res = await Process.run('ping', ['-a', '-n', '1', '-w', '500', ip], runInShell: false)
+            .timeout(const Duration(seconds: 3));
+        final out = res.stdout.toString();
+        // "Pinging HOSTNAME [ip]" or "Pinging ip"
+        final m = RegExp(r'Pinging\s+(\S+)\s+\[').firstMatch(out);
+        if (m != null) {
+          final resolved = m.group(1)!;
+          if (resolved != ip) hostname = resolved;
+        }
+      } catch (_) {}
+    }
 
     if (hostname.isEmpty && mac.isEmpty) return null;
     final source = hostname.isNotEmpty && mac.isNotEmpty ? 'DNS + ARP'
