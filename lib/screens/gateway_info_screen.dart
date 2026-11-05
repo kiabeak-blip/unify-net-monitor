@@ -52,6 +52,25 @@ const _brandProfiles = <_BrandProfile>[
       adminUrl: 'http://{ip}',         tokens: ['belkin']),
   _BrandProfile(name: 'Fritz!Box',  defaultUser: 'admin', defaultPass: 'fritz1234',
       adminUrl: 'http://fritz.box',    tokens: ['fritzbox','fritz!box','avm']),
+  // IP Cameras
+  _BrandProfile(name: 'Hikvision', defaultUser: 'admin', defaultPass: '12345',
+      adminUrl: 'http://{ip}',         tokens: ['hikvision','hikv','ds-','isapi']),
+  _BrandProfile(name: 'Dahua',     defaultUser: 'admin', defaultPass: 'admin',
+      adminUrl: 'http://{ip}',         tokens: ['dahua','dh-','lechange']),
+  _BrandProfile(name: 'Axis',      defaultUser: 'root',  defaultPass: 'pass',
+      adminUrl: 'http://{ip}',         tokens: ['axis','vapix']),
+  _BrandProfile(name: 'Hanwha',    defaultUser: 'admin', defaultPass: 'no-default',
+      adminUrl: 'http://{ip}',         tokens: ['hanwha','samsung techwin','wisenet','snv-','qno-']),
+  _BrandProfile(name: 'Reolink',   defaultUser: 'admin', defaultPass: '',
+      adminUrl: 'http://{ip}',         tokens: ['reolink']),
+  _BrandProfile(name: 'Amcrest',   defaultUser: 'admin', defaultPass: 'admin',
+      adminUrl: 'http://{ip}',         tokens: ['amcrest']),
+  _BrandProfile(name: 'Bosch',     defaultUser: 'service', defaultPass: 'service',
+      adminUrl: 'http://{ip}',         tokens: ['bosch','dinion','flexidome']),
+  _BrandProfile(name: 'Avigilon',  defaultUser: 'admin', defaultPass: 'admin',
+      adminUrl: 'http://{ip}',         tokens: ['avigilon']),
+  _BrandProfile(name: 'Pelco',     defaultUser: 'admin', defaultPass: 'admin',
+      adminUrl: 'http://{ip}',         tokens: ['pelco','sarix']),
 ];
 
 // OUI prefix → brand name (first 3 bytes of MAC, uppercase no separators)
@@ -96,7 +115,7 @@ const _ouiBrands = <String, String>{
 
 // ─── Data model ───────────────────────────────────────────────────────────────
 
-enum _DeviceRole { gateway, switch_, accessPoint, unknown }
+enum _DeviceRole { gateway, switch_, accessPoint, camera, unknown }
 
 class _GatewayDevice {
   final String ip;
@@ -113,10 +132,12 @@ class _GatewayDevice {
   final bool snmpOpen;
   final _BrandProfile? profile;
 
+  final bool rtspOpen;
+
   const _GatewayDevice({
     required this.ip, required this.role, required this.httpOpen,
     required this.httpsOpen, required this.sshOpen, required this.telnetOpen,
-    required this.snmpOpen,
+    required this.snmpOpen, required this.rtspOpen,
     this.mac, this.brand, this.hostname, this.pageTitle,
     this.serverHeader, this.profile,
   });
@@ -213,12 +234,14 @@ class _GatewayInfoScreenState extends State<GatewayInfoScreen> {
       _tcpCheck(ip, 22),
       _tcpCheck(ip, 23),
       _tcpCheck(ip, 161),
+      _tcpCheck(ip, 554),
     ]);
     final httpOpen = results[0];
     final httpsOpen = results[1];
     final sshOpen = results[2];
     final telnetOpen = results[3];
     final snmpOpen = results[4];
+    final rtspOpen = results[5];
 
     final mac = await _getMac(ip);
     String? pageTitle, serverHeader, hostname, brand;
@@ -240,15 +263,20 @@ class _GatewayInfoScreenState extends State<GatewayInfoScreen> {
         ? _brandProfiles.where((b) => b.name == brand).firstOrNull
         : null;
 
+    // Override role to camera if RTSP or brand signals it
+    final effectiveRole = _isCameraDevice(rtspOpen, pageTitle, serverHeader, brand)
+        ? _DeviceRole.camera
+        : role;
+
     return _GatewayDevice(
-      ip: ip, mac: mac, brand: brand ?? macVendor, role: role, hostname: hostname,
+      ip: ip, mac: mac, brand: brand ?? macVendor, role: effectiveRole, hostname: hostname,
       pageTitle: pageTitle, serverHeader: serverHeader,
       httpOpen: httpOpen, httpsOpen: httpsOpen, sshOpen: sshOpen,
-      telnetOpen: telnetOpen, snmpOpen: snmpOpen, profile: profile,
+      telnetOpen: telnetOpen, snmpOpen: snmpOpen, rtspOpen: rtspOpen, profile: profile,
     );
   }
 
-  // Quick probe for candidate IPs — only include if HTTP/HTTPS/SSH responds
+  // Quick probe for candidate IPs — only include if HTTP/HTTPS/SSH/RTSP responds
   Future<_GatewayDevice?> _probeCandidate(String ip) async {
     final results = await Future.wait([
       _tcpCheck(ip, 80),
@@ -256,14 +284,16 @@ class _GatewayInfoScreenState extends State<GatewayInfoScreen> {
       _tcpCheck(ip, 22),
       _tcpCheck(ip, 23),
       _tcpCheck(ip, 161),
+      _tcpCheck(ip, 554),
     ]);
     final httpOpen = results[0];
     final httpsOpen = results[1];
     final sshOpen = results[2];
     final telnetOpen = results[3];
     final snmpOpen = results[4];
+    final rtspOpen = results[5];
 
-    if (!httpOpen && !httpsOpen && !sshOpen && !telnetOpen) return null;
+    if (!httpOpen && !httpsOpen && !sshOpen && !telnetOpen && !rtspOpen) return null;
 
     final mac = await _getMac(ip);
     String? pageTitle, serverHeader, hostname, brand;
@@ -279,10 +309,12 @@ class _GatewayInfoScreenState extends State<GatewayInfoScreen> {
     final macVendor = await _lookupMacVendor(mac);
     brand = _detectBrand(mac, pageTitle, serverHeader, hostname, macVendor: macVendor);
 
-    // Classify role
+    // Classify role — camera check MUST come before the generic http=gateway fallback
     _DeviceRole role = _DeviceRole.unknown;
     final combined = '${pageTitle ?? ''} ${serverHeader ?? ''} ${hostname ?? ''} ${brand ?? ''}'.toLowerCase();
-    if (combined.contains('switch') || combined.contains('sg') || combined.contains('gs') ||
+    if (_isCameraDevice(rtspOpen, pageTitle, serverHeader, brand)) {
+      role = _DeviceRole.camera;
+    } else if (combined.contains('switch') || combined.contains('sg') || combined.contains('gs') ||
         combined.contains('managed') || sshOpen && !httpOpen) {
       role = _DeviceRole.switch_;
     } else if (combined.contains('ap') || combined.contains('access point') ||
@@ -300,8 +332,19 @@ class _GatewayInfoScreenState extends State<GatewayInfoScreen> {
       ip: ip, mac: mac, brand: brand ?? macVendor, role: role, hostname: hostname,
       pageTitle: pageTitle, serverHeader: serverHeader,
       httpOpen: httpOpen, httpsOpen: httpsOpen, sshOpen: sshOpen,
-      telnetOpen: telnetOpen, snmpOpen: snmpOpen, profile: profile,
+      telnetOpen: telnetOpen, snmpOpen: snmpOpen, rtspOpen: rtspOpen, profile: profile,
     );
+  }
+
+  static bool _isCameraDevice(bool rtspOpen, String? title, String? server, String? brand) {
+    if (rtspOpen) return true;
+    final combined = '${title ?? ''} ${server ?? ''} ${brand ?? ''}'.toLowerCase();
+    const cameraKeywords = [
+      'hikvision', 'dahua', 'axis', 'hanwha', 'wisenet', 'reolink', 'amcrest',
+      'bosch', 'avigilon', 'pelco', 'camera', 'ipcam', 'nvr', 'dvr',
+      'webcam', 'cctv', 'onvif', 'vapix', 'isapi', 'lechange',
+    ];
+    return cameraKeywords.any(combined.contains);
   }
 
   Future<bool> _tcpCheck(String ip, int port) async {
@@ -488,18 +531,21 @@ class _DeviceCardState extends State<_DeviceCard> {
       _DeviceRole.gateway      => 'Gateway / Router',
       _DeviceRole.switch_      => 'Switch',
       _DeviceRole.accessPoint  => 'Access Point',
+      _DeviceRole.camera       => 'IP Camera',
       _DeviceRole.unknown      => 'Network Device',
     };
     final roleColor = switch (d.role) {
       _DeviceRole.gateway     => const Color(0xFF00D4FF),
       _DeviceRole.switch_     => const Color(0xFF9B59B6),
       _DeviceRole.accessPoint => const Color(0xFF2ECC71),
+      _DeviceRole.camera      => const Color(0xFFFF8C00),
       _DeviceRole.unknown     => const Color(0xFF95A5A6),
     };
     final roleIcon = switch (d.role) {
       _DeviceRole.gateway     => Icons.router,
       _DeviceRole.switch_     => Icons.device_hub,
       _DeviceRole.accessPoint => Icons.wifi,
+      _DeviceRole.camera      => Icons.videocam_outlined,
       _DeviceRole.unknown     => Icons.device_unknown_outlined,
     };
 
@@ -607,6 +653,7 @@ class _DeviceCardState extends State<_DeviceCard> {
             Wrap(spacing: 6, runSpacing: 6, children: [
               _portChip('80/HTTP',    d.httpOpen),
               _portChip('443/HTTPS',  d.httpsOpen),
+              _portChip('554/RTSP',   d.rtspOpen),
               _portChip('22/SSH',     d.sshOpen),
               _portChip('23/Telnet',  d.telnetOpen),
               _portChip('161/SNMP',   d.snmpOpen),

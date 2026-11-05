@@ -672,7 +672,7 @@ class NetworkScanner {
 
   static String _guessDeviceName(String ip) {
     final lastOctet = ip.split('.').last;
-    if (lastOctet == '1' || lastOctet == '254') return 'Gateway / Router';
+    // Don't assume .1/.254 are always gateways — they could be cameras or other devices
     return 'Unknown ($lastOctet)';
   }
 
