@@ -215,7 +215,7 @@ class _GatewayInfoScreenState extends State<GatewayInfoScreen> {
       final found = <_GatewayDevice>[];
       for (var i = 0; i < liveHosts.length && !_cancelled; i += probeBatch) {
         final batch = liveHosts.sublist(i, (i + probeBatch).clamp(0, liveHosts.length));
-        final results = await Future.wait(batch.map((ip) => _probeCandidate(ip)));
+        final results = await Future.wait(batch.map((ip) => _probeCandidate(ip, gatewayIp)));
         for (final r in results) { if (r != null) found.add(r); }
         if (mounted) setState(() { _devices = [gw, ...found]; _status = 'Probing hosts... (${i + batch.length}/${liveHosts.length})'; });
       }
@@ -277,7 +277,7 @@ class _GatewayInfoScreenState extends State<GatewayInfoScreen> {
   }
 
   // Quick probe for candidate IPs — only include if HTTP/HTTPS/SSH/RTSP responds
-  Future<_GatewayDevice?> _probeCandidate(String ip) async {
+  Future<_GatewayDevice?> _probeCandidate(String ip, String gatewayIp) async {
     final results = await Future.wait([
       _tcpCheck(ip, 80),
       _tcpCheck(ip, 443),
@@ -320,7 +320,7 @@ class _GatewayInfoScreenState extends State<GatewayInfoScreen> {
     } else if (combined.contains('ap') || combined.contains('access point') ||
         combined.contains('unifi') || combined.contains('aironet')) {
       role = _DeviceRole.accessPoint;
-    } else if (httpOpen || httpsOpen) {
+    } else if ((httpOpen || httpsOpen) && ip == gatewayIp) {
       role = _DeviceRole.gateway;
     }
 
